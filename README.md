@@ -1,1 +1,0 @@
-# quantpro_terminal
