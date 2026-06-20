@@ -2800,10 +2800,12 @@ class TradingEngine:
     # LOGGING & STATUS
     # ==========================================
 
-    def _log_error(self, message: str):
-        entry = {"timestamp": datetime.now().isoformat(), "message": message}
-        self.errors.append(entry)
-        if len(self.errors) > 100: self.errors = self.errors[-50:]
+def _log_error(self, message: str):
+    if not hasattr(self, 'errors'):
+        self.errors = []
+    entry = {"timestamp": datetime.now().isoformat(), "message": message}
+    self.errors.append(entry)
+    if len(self.errors) > 100: self.errors = self.errors[-50:]
 
     def get_status(self) -> Dict:
         return {
