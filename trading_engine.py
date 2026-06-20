@@ -197,6 +197,7 @@ class TradingEngine:
     ATR position sizing, VIX filter, backtesting, dividend calendar, and audit trail."""
 
     def __init__(self):
+        self.errors = []
         self.api = None
         self.connected = False
         self.running = False
