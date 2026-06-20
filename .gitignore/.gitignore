@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+quantpro_users.db
+data/
+.env
+data/.encryption_key
