@@ -1,0 +1,13 @@
+streamlit
+sqlalchemy
+bcrypt
+yfinance
+pandas
+numpy
+plotly
+ta
+scikit-learn
+requests==2.28.2
+urllib3==1.26.15
+alpaca-trade-api
+openai
