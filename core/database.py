@@ -1,0 +1,540 @@
+import sqlalchemy
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text
+from sqlalchemy.orm import declarative_base, sessionmaker
+import datetime
+import bcrypt
+import os
+import json
+
+# --- Database Setup ---
+DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
+os.makedirs(DATABASE_DIR, exist_ok=True)
+DATABASE_URL = f"sqlite:///{os.path.join(DATABASE_DIR, 'quantpro_users.db')}"
+engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+# ==========================================
+# USER TABLE
+# ==========================================
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    email = Column(String, unique=True, index=True, nullable=True)
+
+    # API Keys (stored encrypted — encryption handled by core/encryption.py)
+    alpaca_api_key = Column(String, nullable=True)
+    alpaca_secret_key = Column(String, nullable=True)
+
+    # Discord Webhooks
+    discord_webhook_url = Column(String, nullable=True)
+    discord_webhook_url_daily = Column(String, nullable=True)
+    openai_api_key = Column(String, nullable=True)
+
+    # --- Bucket Allocation Settings ---
+    dividend_pct = Column(Float, default=0.35)
+    growth_pct = Column(Float, default=0.35)
+    penny_pct = Column(Float, default=0.30)
+    min_dividend_yield = Column(Float, default=0.03)      # 3% minimum
+    penny_price_threshold = Column(Float, default=5.0)     # $5 threshold
+
+    # --- Security & Compliance ---
+    terms_accepted = Column(Boolean, default=False)
+    terms_accepted_date = Column(DateTime, nullable=True)
+    login_attempts = Column(Integer, default=0)
+    account_locked_until = Column(DateTime, nullable=True)
+    last_login = Column(DateTime, nullable=True)
+
+    # --- Tier System ---
+    tier = Column(String, default="starter")  # "starter", "pro", "fund", "admin"
+    tier_expires = Column(DateTime, nullable=True)  # For trial periods
+
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ==========================================
+# DIVIDEND PAYMENT TABLE
+# ==========================================
+class DividendPayment(Base):
+    __tablename__ = "dividend_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, index=True)
+    symbol = Column(String)
+    amount = Column(Float)
+    pay_date = Column(String)
+    status = Column(String, default="received")  # received, moved_to_withdrawal
+    notes = Column(String, nullable=True)
+    recorded_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ==========================================
+# TRADE LOG TABLE
+# ==========================================
+class Trade(Base):
+    __tablename__ = "trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(50), nullable=False, index=True)
+    timestamp = Column(String(50), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)   # buy, sell, close
+    qty = Column(Float, nullable=True)
+    price = Column(Float, nullable=True)
+    filled_price = Column(Float, nullable=True)
+    filled_qty = Column(Float, nullable=True)
+    slippage_cost = Column(Float, nullable=True)
+    sec_fee = Column(Float, nullable=True)
+    order_id = Column(String(100), nullable=True)
+    status = Column(String(20), nullable=True)
+    reason = Column(String(500), nullable=True)
+    confidence = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    estimated_cost = Column(Float, nullable=True)
+    sector = Column(String(50), nullable=True)
+    bucket = Column(String(20), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# Create all tables
+Base.metadata.create_all(bind=engine)
+
+
+# ==========================================
+# MIGRATION: Add new columns if they don't exist
+# ==========================================
+def migrate_db():
+    """Add new columns to existing tables if they don't exist."""
+    with engine.connect() as conn:
+        # Check and add new columns to users table
+        new_columns = [
+            ('dividend_pct', 'FLOAT'),
+            ('growth_pct', 'FLOAT'),
+            ('penny_pct', 'FLOAT'),
+            ('min_dividend_yield', 'FLOAT'),
+            ('penny_price_threshold', 'FLOAT'),
+            ('terms_accepted', 'BOOLEAN DEFAULT 0'),
+            ('terms_accepted_date', 'DATETIME'),
+            ('login_attempts', 'INTEGER DEFAULT 0'),
+            ('account_locked_until', 'DATETIME'),
+            ('last_login', 'DATETIME'),
+            ('tier', "VARCHAR DEFAULT 'starter'"),
+            ('tier_expires', 'DATETIME'),
+        ]
+        for col_name, col_type in new_columns:
+            try:
+                conn.execute(sqlalchemy.text(
+                    f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"
+                ))
+            except Exception:
+                pass  # Column already exists
+
+        conn.commit()
+
+
+# Run migration on import
+migrate_db()
+
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its bcrypt hash."""
+    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+
+
+def create_user(db: SessionLocal, username: str, password: str, terms_accepted: bool = False):
+    """Create a new user account with default tier."""
+    hashed_pw = hash_password(password)
+    db_user = User(
+        username=username,
+        hashed_password=hashed_pw,
+        dividend_pct=0.35,
+        growth_pct=0.35,
+        penny_pct=0.30,
+        min_dividend_yield=0.03,
+        penny_price_threshold=5.0,
+        terms_accepted=terms_accepted,
+        terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
+        tier="starter",  # Default tier for new users
+        is_active=True,
+        created_at=datetime.datetime.utcnow(),
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def authenticate_user(db: SessionLocal, username: str, password: str):
+    """Authenticate a user with username and password."""
+    from core.rate_limit import rate_limiter
+
+    # Check rate limiter first
+    allowed, message = rate_limiter.check_login_allowed(username)
+    if not allowed:
+        return False
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        rate_limiter.record_login_attempt(username, success=False)
+        return False
+
+    if not user.is_active:
+        rate_limiter.record_login_attempt(username, success=False)
+        return False
+
+    if not verify_password(password, user.hashed_password):
+        rate_limiter.record_login_attempt(username, success=False)
+        return False
+
+    # Success
+    rate_limiter.record_login_attempt(username, success=True)
+    user.last_login = datetime.datetime.utcnow()
+    db.commit()
+
+    return user
+
+
+# ==========================================
+# TIER MANAGEMENT FUNCTIONS
+# ==========================================
+
+def get_user_tier(db: SessionLocal, username: str) -> str:
+    """Get the tier for a user. Returns 'starter' if not set."""
+    user = db.query(User).filter(User.username == username).first()
+    if user and hasattr(user, 'tier') and user.tier:
+        # Check if tier has expired
+        if user.tier_expires and user.tier_expires < datetime.datetime.utcnow():
+            # Tier expired — revert to starter
+            user.tier = "starter"
+            user.tier_expires = None
+            db.commit()
+            return "starter"
+        return user.tier
+    return "starter"
+
+
+def set_user_tier(db: SessionLocal, username: str, tier: str, expires: datetime.datetime = None) -> bool:
+    """Set a user's tier. Used by admin panel or payment webhook.
+    
+    Args:
+        db: Database session
+        username: The username to update
+        tier: One of 'starter', 'pro', 'fund', 'admin'
+        expires: Optional datetime when the tier expires (for trial periods)
+    
+    Returns:
+        True if successful, False if user not found or invalid tier
+    """
+    valid_tiers = ["starter", "pro", "fund", "admin"]
+    if tier not in valid_tiers:
+        return False
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+
+    user.tier = tier
+    user.tier_expires = expires
+    db.commit()
+    return True
+
+
+def get_all_users_with_tiers(db: SessionLocal) -> list:
+    """Get all users with their tier info. For admin panel."""
+    users = db.query(User).all()
+    result = []
+    for u in users:
+        result.append({
+            "id": u.id,
+            "username": u.username,
+            "tier": getattr(u, 'tier', 'starter') or 'starter',
+            "tier_expires": str(u.tier_expires) if hasattr(u, 'tier_expires') and u.tier_expires else None,
+            "email": u.email,
+            "created_at": str(u.created_at) if u.created_at else None,
+            "last_login": str(u.last_login) if u.last_login else None,
+            "is_active": u.is_active,
+            "terms_accepted": u.terms_accepted,
+            "alpaca_connected": bool(u.alpaca_api_key),
+            "discord_connected": bool(u.discord_webhook_url),
+            "openai_connected": bool(u.openai_api_key),
+        })
+    return result
+
+
+# ==========================================
+# TERMS & COMPLIANCE FUNCTIONS
+# ==========================================
+
+def accept_terms(db: SessionLocal, username: str) -> bool:
+    """Mark that a user has accepted the Terms of Service."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+
+    user.terms_accepted = True
+    user.terms_accepted_date = datetime.datetime.utcnow()
+    db.commit()
+    return True
+
+
+def has_accepted_terms(db: SessionLocal, username: str) -> bool:
+    """Check if a user has accepted the Terms of Service."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+    return bool(user.terms_accepted)
+
+
+def update_last_login(db: SessionLocal, username: str) -> None:
+    """Update the last login timestamp for a user."""
+    user = db.query(User).filter(User.username == username).first()
+    if user:
+        user.last_login = datetime.datetime.utcnow()
+        db.commit()
+
+
+# ==========================================
+# GDPR FUNCTIONS — Data Portability & Deletion
+# ==========================================
+
+def export_user_data(db: SessionLocal, username: str) -> dict:
+    """Export all data for a user (GDPR Right to Data Portability)."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return {}
+
+    user_data = {
+        "profile": {
+            "username": user.username,
+            "email": user.email,
+            "created_at": str(user.created_at) if user.created_at else None,
+            "last_login": str(user.last_login) if user.last_login else None,
+            "terms_accepted": user.terms_accepted,
+            "terms_accepted_date": str(user.terms_accepted_date) if user.terms_accepted_date else None,
+            "tier": getattr(user, 'tier', 'starter') or 'starter',
+            "tier_expires": str(user.tier_expires) if hasattr(user, 'tier_expires') and user.tier_expires else None,
+        },
+        "settings": {
+            "dividend_pct": user.dividend_pct,
+            "growth_pct": user.growth_pct,
+            "penny_pct": user.penny_pct,
+            "min_dividend_yield": user.min_dividend_yield,
+            "penny_price_threshold": user.penny_price_threshold,
+        },
+        "integrations": {
+            "alpaca_connected": bool(user.alpaca_api_key),
+            "discord_connected": bool(user.discord_webhook_url),
+            "openai_connected": bool(user.openai_api_key),
+        },
+        "dividend_history": [],
+        "trade_history_count": 0,
+    }
+
+    # Dividend history
+    dividends = db.query(DividendPayment).filter(
+        DividendPayment.username == username
+    ).order_by(DividendPayment.recorded_at.desc()).all()
+
+    for div in dividends:
+        user_data["dividend_history"].append({
+            "symbol": div.symbol,
+            "amount": div.amount,
+            "pay_date": div.pay_date,
+            "status": div.status,
+            "recorded_at": str(div.recorded_at) if div.recorded_at else None,
+        })
+
+    # Trade history count
+    trade_count = db.query(Trade).filter(Trade.username == username).count()
+    user_data["trade_history_count"] = trade_count
+
+    user_data["trading_data"] = {
+        "note": "Trading logs, signals, and performance data are stored in data/trading_logs/. "
+                "These can be exported separately from the Portfolio tab in the app.",
+    }
+
+    return user_data
+
+
+def export_user_data_json(db: SessionLocal, username: str) -> str:
+    """Export user data as a JSON string."""
+    data = export_user_data(db, username)
+    return json.dumps(data, indent=2)
+
+
+def delete_user_and_data(db: SessionLocal, username: str) -> bool:
+    """Delete a user account and all associated data (GDPR Right to Erasure)."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+
+    # Delete trade history
+    db.query(Trade).filter(Trade.username == username).delete()
+
+    # Delete dividend history
+    db.query(DividendPayment).filter(DividendPayment.username == username).delete()
+
+    # Delete user record
+    db.delete(user)
+    db.commit()
+
+    # Delete trading log files
+    trading_logs_dir = os.path.join(DATABASE_DIR, '..', 'trading_logs')
+    user_files = [
+        os.path.join(trading_logs_dir, 'trade_log.json'),
+        os.path.join(trading_logs_dir, 'settings.json'),
+        os.path.join(trading_logs_dir, 'buckets.json'),
+        os.path.join(trading_logs_dir, 'equity_snapshots.json'),
+        os.path.join(trading_logs_dir, 'signal_history.json'),
+        os.path.join(trading_logs_dir, 'performance_metrics.json'),
+    ]
+
+    for filepath in user_files:
+        try:
+            if os.path.exists(filepath):
+                pass
+        except Exception:
+            pass
+
+    return True
+
+
+# ==========================================
+# DIVIDEND FUNCTIONS
+# ==========================================
+
+def record_dividend(db: SessionLocal, username: str, symbol: str, amount: float,
+                    pay_date: str = "", status: str = "received", notes: str = ""):
+    """Record a dividend payment in the database."""
+    div = DividendPayment(
+        username=username,
+        symbol=symbol,
+        amount=amount,
+        pay_date=pay_date,
+        status=status,
+        notes=notes,
+    )
+    db.add(div)
+    db.commit()
+    db.refresh(div)
+    return div
+
+
+def get_dividend_history(db: SessionLocal, username: str):
+    """Get all dividend payments for a user."""
+    return db.query(DividendPayment).filter(
+        DividendPayment.username == username
+    ).order_by(DividendPayment.recorded_at.desc()).all()
+
+
+# ==========================================
+# TRADE LOG FUNCTIONS (NEW — persistence)
+# ==========================================
+
+def save_trade_to_db(username: str, trade_record: dict) -> bool:
+    """Save a single trade record to the database."""
+    db = SessionLocal()
+    try:
+        trade = Trade(
+            username=username,
+            timestamp=trade_record.get("timestamp", ""),
+            symbol=trade_record.get("symbol", ""),
+            side=trade_record.get("side", ""),
+            qty=trade_record.get("qty"),
+            price=trade_record.get("price"),
+            filled_price=trade_record.get("filled_price"),
+            filled_qty=trade_record.get("filled_qty"),
+            slippage_cost=trade_record.get("slippage_cost"),
+            sec_fee=trade_record.get("sec_fee"),
+            order_id=trade_record.get("order_id", ""),
+            status=trade_record.get("status", ""),
+            reason=trade_record.get("reason", ""),
+            confidence=trade_record.get("confidence"),
+            stop_loss=trade_record.get("stop_loss"),
+            take_profit=trade_record.get("take_profit"),
+            estimated_cost=trade_record.get("estimated_cost"),
+            sector=trade_record.get("sector", ""),
+            bucket=trade_record.get("bucket", ""),
+        )
+        db.add(trade)
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        print(f"Error saving trade to DB: {e}")
+        return False
+    finally:
+        db.close()
+
+
+def load_trades_from_db(username: str, limit: int = 5000) -> list:
+    """Load trade records from the database for a given user."""
+    db = SessionLocal()
+    try:
+        trades = db.query(Trade).filter(Trade.username == username).order_by(Trade.id.asc()).limit(limit).all()
+        result = []
+        for t in trades:
+            result.append({
+                "timestamp": t.timestamp or "",
+                "symbol": t.symbol or "",
+                "side": t.side or "",
+                "qty": t.qty,
+                "price": t.price,
+                "filled_price": t.filled_price,
+                "filled_qty": t.filled_qty,
+                "slippage_cost": t.slippage_cost,
+                "sec_fee": t.sec_fee,
+                "order_id": t.order_id or "",
+                "status": t.status or "",
+                "reason": t.reason or "",
+                "confidence": t.confidence,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "estimated_cost": t.estimated_cost,
+                "sector": t.sector or "",
+                "bucket": t.bucket or "",
+            })
+        return result
+    except Exception as e:
+        print(f"Error loading trades from DB: {e}")
+        return []
+    finally:
+        db.close()
+
+
+def clear_trades_from_db(username: str) -> bool:
+    """Delete all trade records for a user (for GDPR right to be forgotten)."""
+    db = SessionLocal()
+    try:
+        db.query(Trade).filter(Trade.username == username).delete()
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        print(f"Error clearing trades from DB: {e}")
+        return False
+    finally:
+        db.close()
