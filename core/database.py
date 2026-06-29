@@ -7,10 +7,32 @@ import os
 import json
 
 # --- Database Setup ---
-DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
-os.makedirs(DATABASE_DIR, exist_ok=True)
-DATABASE_URL = f"sqlite:///{os.path.join(DATABASE_DIR, 'quantpro_users.db')}"
-engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Digital Ocean sets DATABASE_URL automatically when you attach a managed database
+# For local dev, falls back to SQLite
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+if DATABASE_URL:
+    # PostgreSQL on Digital Ocean
+    # Fix postgres:// to postgresql:// for SQLAlchemy 2.0+
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+    # SSL required for Digital Ocean managed databases
+    engine = sqlalchemy.create_engine(
+        DATABASE_URL,
+        connect_args={"sslmode": "require"},
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
+else:
+    # Local SQLite fallback
+    DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
+    os.makedirs(DATABASE_DIR, exist_ok=True)
+    sqlite_path = os.path.join(DATABASE_DIR, 'quantpro_users.db')
+    DATABASE_URL = f"sqlite:///{sqlite_path}"
+    engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -39,8 +61,8 @@ class User(Base):
     dividend_pct = Column(Float, default=0.35)
     growth_pct = Column(Float, default=0.35)
     penny_pct = Column(Float, default=0.30)
-    min_dividend_yield = Column(Float, default=0.03)      # 3% minimum
-    penny_price_threshold = Column(Float, default=5.0)     # $5 threshold
+    min_dividend_yield = Column(Float, default=0.03)
+    penny_price_threshold = Column(Float, default=5.0)
 
     # --- Security & Compliance ---
     terms_accepted = Column(Boolean, default=False)
@@ -50,8 +72,8 @@ class User(Base):
     last_login = Column(DateTime, nullable=True)
 
     # --- Tier System ---
-    tier = Column(String, default="starter")  # "starter", "pro", "fund", "admin"
-    tier_expires = Column(DateTime, nullable=True)  # For trial periods
+    tier = Column(String, default="starter")
+    tier_expires = Column(DateTime, nullable=True)
 
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -68,7 +90,7 @@ class DividendPayment(Base):
     symbol = Column(String)
     amount = Column(Float)
     pay_date = Column(String)
-    status = Column(String, default="received")  # received, moved_to_withdrawal
+    status = Column(String, default="received")
     notes = Column(String, nullable=True)
     recorded_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -83,7 +105,7 @@ class Trade(Base):
     username = Column(String(50), nullable=False, index=True)
     timestamp = Column(String(50), nullable=False)
     symbol = Column(String(20), nullable=False)
-    side = Column(String(10), nullable=False)   # buy, sell, close
+    side = Column(String(10), nullable=False)
     qty = Column(Float, nullable=True)
     price = Column(Float, nullable=True)
     filled_price = Column(Float, nullable=True)
@@ -112,19 +134,18 @@ Base.metadata.create_all(bind=engine)
 def migrate_db():
     """Add new columns to existing tables if they don't exist."""
     with engine.connect() as conn:
-        # Check and add new columns to users table
         new_columns = [
             ('dividend_pct', 'FLOAT'),
             ('growth_pct', 'FLOAT'),
             ('penny_pct', 'FLOAT'),
             ('min_dividend_yield', 'FLOAT'),
             ('penny_price_threshold', 'FLOAT'),
-            ('terms_accepted', 'BOOLEAN DEFAULT 0'),
+            ('terms_accepted', 'BOOLEAN'),
             ('terms_accepted_date', 'DATETIME'),
-            ('login_attempts', 'INTEGER DEFAULT 0'),
+            ('login_attempts', 'INTEGER'),
             ('account_locked_until', 'DATETIME'),
             ('last_login', 'DATETIME'),
-            ('tier', "VARCHAR DEFAULT 'starter'"),
+            ('tier', 'VARCHAR'),
             ('tier_expires', 'DATETIME'),
         ]
         for col_name, col_type in new_columns:
@@ -132,10 +153,9 @@ def migrate_db():
                 conn.execute(sqlalchemy.text(
                     f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"
                 ))
+                conn.commit()
             except Exception:
                 pass  # Column already exists
-
-        conn.commit()
 
 
 # Run migration on import
@@ -177,7 +197,7 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         penny_price_threshold=5.0,
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
-        tier="starter",  # Default tier for new users
+        tier="starter",
         is_active=True,
         created_at=datetime.datetime.utcnow(),
     )
@@ -191,7 +211,6 @@ def authenticate_user(db: SessionLocal, username: str, password: str):
     """Authenticate a user with username and password."""
     from core.rate_limit import rate_limiter
 
-    # Check rate limiter first
     allowed, message = rate_limiter.check_login_allowed(username)
     if not allowed:
         return False
@@ -209,7 +228,6 @@ def authenticate_user(db: SessionLocal, username: str, password: str):
         rate_limiter.record_login_attempt(username, success=False)
         return False
 
-    # Success
     rate_limiter.record_login_attempt(username, success=True)
     user.last_login = datetime.datetime.utcnow()
     db.commit()
@@ -225,9 +243,7 @@ def get_user_tier(db: SessionLocal, username: str) -> str:
     """Get the tier for a user. Returns 'starter' if not set."""
     user = db.query(User).filter(User.username == username).first()
     if user and hasattr(user, 'tier') and user.tier:
-        # Check if tier has expired
         if user.tier_expires and user.tier_expires < datetime.datetime.utcnow():
-            # Tier expired — revert to starter
             user.tier = "starter"
             user.tier_expires = None
             db.commit()
@@ -237,17 +253,7 @@ def get_user_tier(db: SessionLocal, username: str) -> str:
 
 
 def set_user_tier(db: SessionLocal, username: str, tier: str, expires: datetime.datetime = None) -> bool:
-    """Set a user's tier. Used by admin panel or payment webhook.
-    
-    Args:
-        db: Database session
-        username: The username to update
-        tier: One of 'starter', 'pro', 'fund', 'admin'
-        expires: Optional datetime when the tier expires (for trial periods)
-    
-    Returns:
-        True if successful, False if user not found or invalid tier
-    """
+    """Set a user's tier."""
     valid_tiers = ["starter", "pro", "fund", "admin"]
     if tier not in valid_tiers:
         return False
@@ -353,7 +359,6 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
         "trade_history_count": 0,
     }
 
-    # Dividend history
     dividends = db.query(DividendPayment).filter(
         DividendPayment.username == username
     ).order_by(DividendPayment.recorded_at.desc()).all()
@@ -367,7 +372,6 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "recorded_at": str(div.recorded_at) if div.recorded_at else None,
         })
 
-    # Trade history count
     trade_count = db.query(Trade).filter(Trade.username == username).count()
     user_data["trade_history_count"] = trade_count
 
@@ -391,33 +395,10 @@ def delete_user_and_data(db: SessionLocal, username: str) -> bool:
     if not user:
         return False
 
-    # Delete trade history
     db.query(Trade).filter(Trade.username == username).delete()
-
-    # Delete dividend history
     db.query(DividendPayment).filter(DividendPayment.username == username).delete()
-
-    # Delete user record
     db.delete(user)
     db.commit()
-
-    # Delete trading log files
-    trading_logs_dir = os.path.join(DATABASE_DIR, '..', 'trading_logs')
-    user_files = [
-        os.path.join(trading_logs_dir, 'trade_log.json'),
-        os.path.join(trading_logs_dir, 'settings.json'),
-        os.path.join(trading_logs_dir, 'buckets.json'),
-        os.path.join(trading_logs_dir, 'equity_snapshots.json'),
-        os.path.join(trading_logs_dir, 'signal_history.json'),
-        os.path.join(trading_logs_dir, 'performance_metrics.json'),
-    ]
-
-    for filepath in user_files:
-        try:
-            if os.path.exists(filepath):
-                pass
-        except Exception:
-            pass
 
     return True
 
@@ -451,7 +432,7 @@ def get_dividend_history(db: SessionLocal, username: str):
 
 
 # ==========================================
-# TRADE LOG FUNCTIONS (NEW — persistence)
+# TRADE LOG FUNCTIONS
 # ==========================================
 
 def save_trade_to_db(username: str, trade_record: dict) -> bool:
@@ -538,3 +519,4 @@ def clear_trades_from_db(username: str) -> bool:
         return False
     finally:
         db.close()
+
