@@ -12,28 +12,13 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 if DATABASE_URL:
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    
+
     engine = sqlalchemy.create_engine(
         DATABASE_URL,
         pool_pre_ping=True,
         pool_recycle=300,
     )
-
-    # Create dedicated schema to avoid public schema permission issues
-    with engine.connect() as conn:
-        conn.execute(sqlalchemy.text("CREATE SCHEMA IF NOT EXISTS app"))
-        conn.execute(sqlalchemy.text("GRANT ALL ON SCHEMA app TO current_user"))
-        conn.commit()
-
-    # Set search_path to use app schema
-    @sqlalchemy.event.listens_for(engine, "connect")
-    def set_search_path(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("SET search_path TO app,public")
-        cursor.close()
-
 else:
-    # Local SQLite fallback
     DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
     os.makedirs(DATABASE_DIR, exist_ok=True)
     sqlite_path = os.path.join(DATABASE_DIR, 'quantpro_users.db')
@@ -42,6 +27,7 @@ else:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 # ==========================================
 # USER TABLE
@@ -408,6 +394,7 @@ def delete_user_and_data(db: SessionLocal, username: str) -> bool:
 
     return True
 
+
 # ==========================================
 # DIVIDEND FUNCTIONS
 # ==========================================
@@ -428,11 +415,13 @@ def record_dividend(db: SessionLocal, username: str, symbol: str, amount: float,
     db.refresh(div)
     return div
 
+
 def get_dividend_history(db: SessionLocal, username: str):
     """Get all dividend payments for a user."""
     return db.query(DividendPayment).filter(
         DividendPayment.username == username
     ).order_by(DividendPayment.recorded_at.desc()).all()
+
 
 # ==========================================
 # TRADE LOG FUNCTIONS
@@ -473,6 +462,7 @@ def save_trade_to_db(username: str, trade_record: dict) -> bool:
     finally:
         db.close()
 
+
 def load_trades_from_db(username: str, limit: int = 5000) -> list:
     """Load trade records from the database for a given user."""
     db = SessionLocal()
@@ -506,6 +496,7 @@ def load_trades_from_db(username: str, limit: int = 5000) -> list:
         return []
     finally:
         db.close()
+
 
 def clear_trades_from_db(username: str) -> bool:
     """Delete all trade records for a user (for GDPR right to be forgotten)."""
