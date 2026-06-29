@@ -10,14 +10,11 @@ import json
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 if DATABASE_URL:
-    # PostgreSQL on Digital Ocean
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
-    # Create engine with app schema
+    
     engine = sqlalchemy.create_engine(
         DATABASE_URL,
-        connect_args={"sslmode": "require"},
         pool_pre_ping=True,
         pool_recycle=300,
     )
@@ -411,7 +408,6 @@ def delete_user_and_data(db: SessionLocal, username: str) -> bool:
 
     return True
 
-
 # ==========================================
 # DIVIDEND FUNCTIONS
 # ==========================================
@@ -432,13 +428,11 @@ def record_dividend(db: SessionLocal, username: str, symbol: str, amount: float,
     db.refresh(div)
     return div
 
-
 def get_dividend_history(db: SessionLocal, username: str):
     """Get all dividend payments for a user."""
     return db.query(DividendPayment).filter(
         DividendPayment.username == username
     ).order_by(DividendPayment.recorded_at.desc()).all()
-
 
 # ==========================================
 # TRADE LOG FUNCTIONS
@@ -479,7 +473,6 @@ def save_trade_to_db(username: str, trade_record: dict) -> bool:
     finally:
         db.close()
 
-
 def load_trades_from_db(username: str, limit: int = 5000) -> list:
     """Load trade records from the database for a given user."""
     db = SessionLocal()
@@ -513,7 +506,6 @@ def load_trades_from_db(username: str, limit: int = 5000) -> list:
         return []
     finally:
         db.close()
-
 
 def clear_trades_from_db(username: str) -> bool:
     """Delete all trade records for a user (for GDPR right to be forgotten)."""
