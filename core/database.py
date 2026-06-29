@@ -7,24 +7,34 @@ import os
 import json
 
 # --- Database Setup ---
-# Digital Ocean sets DATABASE_URL automatically when you attach a managed database
-# For local dev, falls back to SQLite
-
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 if DATABASE_URL:
     # PostgreSQL on Digital Ocean
-    # Fix postgres:// to postgresql:// for SQLAlchemy 2.0+
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-    # SSL required for Digital Ocean managed databases
+    # Create engine with app schema
     engine = sqlalchemy.create_engine(
         DATABASE_URL,
         connect_args={"sslmode": "require"},
         pool_pre_ping=True,
         pool_recycle=300,
     )
+
+    # Create dedicated schema to avoid public schema permission issues
+    with engine.connect() as conn:
+        conn.execute(sqlalchemy.text("CREATE SCHEMA IF NOT EXISTS app"))
+        conn.execute(sqlalchemy.text("GRANT ALL ON SCHEMA app TO current_user"))
+        conn.commit()
+
+    # Set search_path to use app schema
+    @sqlalchemy.event.listens_for(engine, "connect")
+    def set_search_path(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("SET search_path TO app,public")
+        cursor.close()
+
 else:
     # Local SQLite fallback
     DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
@@ -35,7 +45,6 @@ else:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
-
 
 # ==========================================
 # USER TABLE
@@ -519,4 +528,3 @@ def clear_trades_from_db(username: str) -> bool:
         return False
     finally:
         db.close()
-
