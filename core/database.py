@@ -21,7 +21,7 @@ if DATABASE_URL:
 else:
     DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
     os.makedirs(DATABASE_DIR, exist_ok=True)
-    sqlite_path = os.path.join(DATABASE_DIR, 'quantpro_users.db')
+    sqlite_path = os.path.join(DATABASE_DIR, 'cascadetrade_users.db')
     DATABASE_URL = f"sqlite:///{sqlite_path}"
     engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
@@ -43,6 +43,7 @@ class User(Base):
     # API Keys (stored encrypted — encryption handled by core/encryption.py)
     alpaca_api_key = Column(String, nullable=True)
     alpaca_secret_key = Column(String, nullable=True)
+    finnhub_api_key = Column(String, nullable=True)
 
     # Discord Webhooks
     discord_webhook_url = Column(String, nullable=True)
@@ -69,11 +70,11 @@ class User(Base):
     tier_expires = Column(DateTime, nullable=True)
 
     # --- Subscription & Payments (Stripe) ---
-    subscription_plan = Column(String, default="starter")  # starter, pro, fund, admin
-    subscription_id = Column(String, nullable=True)        # Stripe subscription ID
-    subscription_status = Column(String, default="inactive") # active, past_due, cancelled, inactive
-    subscription_start = Column(DateTime, nullable=True)   # When the subscription started
-    subscription_end = Column(DateTime, nullable=True)      # When the current billing period ends
+    subscription_plan = Column(String, default="starter")      # starter, pro, fund, admin
+    subscription_id = Column(String, nullable=True)             # Stripe subscription ID
+    subscription_status = Column(String, default="inactive")    # active, past_due, cancelled, inactive
+    subscription_start = Column(DateTime, nullable=True)        # When the subscription started
+    subscription_end = Column(DateTime, nullable=True)         # When the current billing period ends
 
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -140,7 +141,7 @@ def migrate_db():
             ('penny_pct', 'FLOAT'),
             ('min_dividend_yield', 'FLOAT'),
             ('penny_price_threshold', 'FLOAT'),
-            ('profit_skim_pct', 'FLOAT'),  # Added for profit skimming
+            ('profit_skim_pct', 'FLOAT'),
             ('terms_accepted', 'BOOLEAN'),
             ('terms_accepted_date', 'DATETIME'),
             ('login_attempts', 'INTEGER'),
@@ -148,12 +149,12 @@ def migrate_db():
             ('last_login', 'DATETIME'),
             ('tier', 'VARCHAR'),
             ('tier_expires', 'DATETIME'),
-            # Added for Stripe Subscriptions
-            ('subscription_plan', 'VARCHAR DEFAULT \'starter\''),
+            ('subscription_plan', "VARCHAR DEFAULT 'starter'"),
             ('subscription_id', 'VARCHAR'),
-            ('subscription_status', 'VARCHAR DEFAULT \'inactive\''),
+            ('subscription_status', "VARCHAR DEFAULT 'inactive'"),
             ('subscription_start', 'DATETIME'),
             ('subscription_end', 'DATETIME'),
+            ('finnhub_api_key', 'VARCHAR'),
         ]
         for col_name, col_type in new_columns:
             try:
@@ -202,12 +203,12 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         penny_pct=0.30,
         min_dividend_yield=0.03,
         penny_price_threshold=5.0,
-        profit_skim_pct=1.0,  # Default to 100% skim (safest)
+        profit_skim_pct=1.0,
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
         tier="starter",
-        subscription_plan="starter",      # Stripe defaults
-        subscription_status="inactive",  # Stripe defaults
+        subscription_plan="starter",
+        subscription_status="inactive",
         is_active=True,
         created_at=datetime.datetime.utcnow(),
     )
@@ -250,20 +251,45 @@ def authenticate_user(db: SessionLocal, username: str, password: str):
 # ==========================================
 
 def get_user_tier(db: SessionLocal, username: str) -> str:
-    """Get the tier for a user. Returns 'starter' if not set."""
+    """Get the effective tier for a user.
+
+    Checks both the legacy 'tier' column and the Stripe subscription fields.
+    If the subscription has expired or is inactive, downgrades to 'starter'.
+    Returns 'starter' if not set or expired.
+    """
     user = db.query(User).filter(User.username == username).first()
-    if user and hasattr(user, 'tier') and user.tier:
+    if not user:
+        return "starter"
+
+    # --- Check Stripe subscription status first ---
+    if user.subscription_id and user.subscription_status == "active":
+        # Active Stripe subscription — use subscription_plan
+        # If subscription_end has passed, downgrade
+        if user.subscription_end and user.subscription_end < datetime.datetime.utcnow():
+            # Subscription period ended — downgrade
+            user.tier = "starter"
+            user.tier_expires = None
+            user.subscription_status = "inactive"
+            db.commit()
+            return "starter"
+        # Subscription is active and current
+        return user.subscription_plan or "starter"
+
+    # --- Fall back to legacy tier column ---
+    if hasattr(user, 'tier') and user.tier:
         if user.tier_expires and user.tier_expires < datetime.datetime.utcnow():
+            # Tier has expired — downgrade to starter
             user.tier = "starter"
             user.tier_expires = None
             db.commit()
             return "starter"
         return user.tier
+
     return "starter"
 
 
 def set_user_tier(db: SessionLocal, username: str, tier: str, expires: datetime.datetime = None) -> bool:
-    """Set a user's tier."""
+    """Set a user's tier (legacy method — for admin overrides or manual upgrades)."""
     valid_tiers = ["starter", "pro", "fund", "admin"]
     if tier not in valid_tiers:
         return False
@@ -276,6 +302,81 @@ def set_user_tier(db: SessionLocal, username: str, tier: str, expires: datetime.
     user.tier_expires = expires
     db.commit()
     return True
+
+
+def update_subscription(db: SessionLocal, username: str, plan: str,
+                        subscription_id: str, status: str = "active",
+                        start_date: datetime.datetime = None,
+                        end_date: datetime.datetime = None) -> bool:
+    """Update a user's Stripe subscription details and sync the tier.
+
+    Called by the Stripe webhook handler when a checkout.session.completed
+    or customer.subscription.updated event is received.
+    """
+    valid_plans = ["starter", "pro", "fund", "admin"]
+    if plan not in valid_plans:
+        return False
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+
+    user.subscription_plan = plan
+    user.subscription_id = subscription_id
+    user.subscription_status = status
+    user.subscription_start = start_date
+    user.subscription_end = end_date
+
+    # Keep legacy tier column in sync
+    if status == "active":
+        user.tier = plan
+        user.tier_expires = end_date
+    elif status in ("cancelled", "inactive", "past_due"):
+        user.tier = "starter"
+        user.tier_expires = None
+
+    db.commit()
+    return True
+
+
+def deactivate_subscription(db: SessionLocal, username: str) -> bool:
+    """Deactivate a user's subscription — downgrades to starter.
+
+    Called when a Stripe subscription is deleted, expires, or payment fails
+    after the grace period.
+    """
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+
+    user.subscription_status = "inactive"
+    user.subscription_plan = "starter"
+    user.tier = "starter"
+    user.tier_expires = None
+    db.commit()
+    return True
+
+
+def get_user_by_subscription_id(db: SessionLocal, stripe_subscription_id: str):
+    """Look up a user by their Stripe subscription ID.
+
+    Used by the webhook handler to find the local user for a Stripe event.
+    Returns the User object or None.
+    """
+    return db.query(User).filter(
+        User.subscription_id == stripe_subscription_id
+    ).first()
+
+
+def get_user_by_stripe_customer_id(db: SessionLocal, stripe_customer_id: str):
+    """Look up a user by their Stripe customer ID.
+
+    Falls back to email match if no direct customer_id link exists.
+    Returns the User object or None.
+    """
+    # If we add a stripe_customer_id column later, query it here
+    # For now, we rely on the subscription_id or email
+    return None
 
 
 def get_all_users_with_tiers(db: SessionLocal) -> list:
@@ -296,6 +397,9 @@ def get_all_users_with_tiers(db: SessionLocal) -> list:
             "alpaca_connected": bool(u.alpaca_api_key),
             "discord_connected": bool(u.discord_webhook_url),
             "openai_connected": bool(u.openai_api_key),
+            "subscription_plan": getattr(u, 'subscription_plan', 'starter') or 'starter',
+            "subscription_status": getattr(u, 'subscription_status', 'inactive') or 'inactive',
+            "subscription_end": str(u.subscription_end) if hasattr(u, 'subscription_end') and u.subscription_end else None,
         })
     return result
 
@@ -350,7 +454,7 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "last_login": str(user.last_login) if user.last_login else None,
             "terms_accepted": user.terms_accepted,
             "terms_accepted_date": str(user.terms_accepted_date) if user.terms_accepted_date else None,
-            "tier": getattr(user, 'tier', 'starter') or 'starter',
+            "tier": getattr(u, 'tier', 'starter') or 'starter' if hasattr(user, 'tier') else 'starter',
             "tier_expires": str(user.tier_expires) if hasattr(user, 'tier_expires') and user.tier_expires else None,
         },
         "settings": {
@@ -365,6 +469,7 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "alpaca_connected": bool(user.alpaca_api_key),
             "discord_connected": bool(user.discord_webhook_url),
             "openai_connected": bool(user.openai_api_key),
+            "finnhub_connected": bool(getattr(user, 'finnhub_api_key', None)),
         },
         "subscription": {
             "plan": getattr(user, 'subscription_plan', 'starter'),
@@ -536,3 +641,25 @@ def clear_trades_from_db(username: str) -> bool:
         return False
     finally:
         db.close()
+
+
+# ==========================================
+# FINNHUB API KEY FUNCTIONS
+# ==========================================
+
+def save_finnhub_api_key(db: SessionLocal, username: str, api_key: str) -> bool:
+    """Save or update a user's Finnhub API key."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return False
+    user.finnhub_api_key = api_key
+    db.commit()
+    return True
+
+
+def get_finnhub_api_key(db: SessionLocal, username: str) -> str:
+    """Get a user's Finnhub API key. Returns empty string if not set."""
+    user = db.query(User).filter(User.username == username).first()
+    if not user or not user.finnhub_api_key:
+        return ""
+    return user.finnhub_api_key
