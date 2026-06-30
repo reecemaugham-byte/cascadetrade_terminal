@@ -1,6 +1,6 @@
 """
 trading_engine.py
-QuantPro Terminal — Diamond Standard Trading Engine
+CascadeTrade Terminal — Diamond Standard Trading Engine
 3-bucket system: Dividend (🟢), Growth (🔵), Penny (🔴), Withdrawal (🟡)
 Advanced signals: MACD, Bollinger, MA Cross, ATR, VIX filter
 ATR position sizing, backtesting, dividend calendar, audit trail
@@ -397,6 +397,26 @@ class TradingEngine:
 
     def set_username(self, username: str):
         self._username = username
+
+    def _get_finhub_key(self) -> str:
+        """Get the Finnhub API key for the current user.
+        Checks the database first, then falls back to environment variable.
+        """
+        try:
+            username = getattr(self, '_username', '')
+            if username:
+                from core.database import SessionLocal, get_finhub_api_key
+                db = SessionLocal()
+                try:
+                    key = get_finhub_api_key(db, username)
+                    if key:
+                        return key
+                finally:
+                    db.close()
+        except Exception:
+            pass
+        # Fallback to environment variable
+        return os.environ.get("FINNHUB_API_KEY", "")
         
 
     # ==========================================
@@ -1632,7 +1652,7 @@ class TradingEngine:
 
     def export_to_csv(self) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        watermark = "\nSource: QuantPro Terminal - Unauthorized reproduction prohibited"
+        watermark = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
         trades_file = self.exports_dir / f"trades_{timestamp}.csv"
         if self.trade_log:
             with open(trades_file, "w", newline="") as f:
@@ -2932,7 +2952,7 @@ class TradingEngine:
 
         try:
             # 1. Detect newly tradable symbols on Alpaca
-            new_symbols = ipo_scanner.detect_new_symbols(self.api)
+            new_symbols = ipo_scanner.scan_new_listings(self.api)
             if new_symbols:
                 results["new_symbols"] = new_symbols
                 self._log_error(f"IPO Scanner: Found {len(new_symbols)} newly tradable stocks: {', '.join(new_symbols[:10])}")
@@ -2940,7 +2960,8 @@ class TradingEngine:
             # 2. Fetch upcoming IPOs from Finnhub (only once per day to save API calls)
             today = datetime.now().date().isoformat()
             if self.last_ipo_scan_date != today:
-                upcoming = ipo_scanner.get_upcoming_ipos(days_ahead=7)
+                finnhub_key = self._get_finhub_key()
+                upcoming = ipo_scanner.get_upcoming_ipos(days_ahead=7, finnhub_api_key=finnhub_key)
                 if upcoming:
                     results["upcoming_ipos"] = upcoming
                     self.last_ipo_scan_date = today
