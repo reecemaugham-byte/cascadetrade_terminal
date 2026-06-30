@@ -123,6 +123,12 @@ try:
 except Exception:
     pass
 
+try:
+    from core.payments import upgrade_user, downgrade_user, check_subscription, get_payment_link
+    PAYMENTS_AVAILABLE = True
+except ImportError:
+    PAYMENTS_AVAILABLE = False
+
 # ==========================================
 # TIER SYSTEM IMPORT
 # ==========================================
@@ -265,6 +271,15 @@ if not st.session_state.authenticated:
                     if user:
                         st.session_state.authenticated = True
                         st.session_state.username = _username
+                        
+                        # --- Check subscription status on login ---
+                        if PAYMENTS_AVAILABLE:
+                            db_check = SessionLocal()
+                            sub_status = check_subscription(db_check, _username)
+                            db_check.close()
+                            # If the function downgraded them because of expiry, it returns "expired"
+                            if sub_status.get("status") == "expired":
+                                st.warning("Your Pro subscription has expired. You have been downgraded to Starter.")
                         if not _terms_accepted:
                             st.session_state.needs_onboarding = True
                             st.session_state.onboarding_step = 1
@@ -700,8 +715,8 @@ st.header("📊 QuantPro Terminal")
 st.markdown(f"### Welcome back, **{st.session_state.username}**.")
 
 # TABS - Now 6 tabs (Scanner + Deep AI merged)
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
-    ["📚 Academy", "🔬 Scanner & Analysis", "💰 Auto Trade", "📊 Portfolio", "🔬 Backtest", "💎 Dividends", "🔔 New Listings"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    ["📚 Academy", "🔬 Scanner & Analysis", "💰 Auto Trade", "📊 Portfolio", "🔬 Backtest", "💎 Dividends", "🔔 New Listings", "⚡ Upgrade"])
 
 # ==========================================
 # TAB 1: ACADEMY (Education Content)
@@ -3270,3 +3285,141 @@ with tab7:
         st.info("No IPO data loaded. Click 'Check Upcoming IPOs' above to fetch from Finnhub.")
 
     st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+
+# ==========================================
+# TAB 8: UPGRADE & SUBSCRIPTIONS
+# ==========================================
+with tab8:
+    st.markdown("### ⚡ Upgrade Your Plan")
+    
+    db_upgrade = SessionLocal()
+    current_sub = check_subscription(db_upgrade, st.session_state.username) if PAYMENTS_AVAILABLE else {"plan": "starter", "status": "inactive", "tier": "starter"}
+    current_user_db = db_upgrade.query(User).filter(User.username == st.session_state.username).first()
+    db_upgrade.close()
+
+    current_plan = current_sub.get("plan", "starter")
+    current_status = current_sub.get("status", "inactive")
+    current_end = current_sub.get("end_date", "N/A")
+
+    # --- CURRENT PLAN STATUS ---
+    if current_plan != "starter":
+        st.success(f"🎉 You are currently on the **{current_plan.title()}** plan (Status: {current_status.title()}).")
+        if current_end and current_end != "None":
+            st.caption(f"Your current billing period ends on: {current_end}")
+    else:
+        st.info("You are currently on the **Starter (Free)** plan.")
+
+    st.markdown("---")
+
+    # --- PLAN COMPARISON ---
+    st.markdown("### 📊 Plan Comparison")
+    
+    col_p1, col_p2, col_p3 = st.columns(3)
+
+    with col_p1:
+        st.markdown("#### 🆓 Starter (Free)")
+        st.markdown("""
+        - ✅ Paper Trading
+        - ✅ Basic Signals (RSI, Volume)
+        - ✅ 3-Bucket System
+        - ✅ Discord Alerts
+        - ✅ Dividend Calendar
+        - 🔒 Advanced Signals (MACD, Bollinger)
+        - 🔒 OpenAI Sentiment
+        - 🔒 Live Trading
+        - 🔒 DRIP Calculator
+        - 🔒 Profit Skimming
+        """)
+
+    with col_p2:
+        st.markdown("#### ⚡ Pro (£29/month)")
+        st.markdown("""
+        - ✅ Everything in Starter
+        - ✅ Advanced Signals (MACD, Bollinger, MA Cross, VIX)
+        - ✅ OpenAI Sentiment Analysis
+        - ✅ Live Trading with Real Money
+        - ✅ DRIP Calculator
+        - ✅ Profit Skimming (Auto-Lock)
+        - ✅ IPO & New Listings Scanner
+        - 🔒 Multiple Accounts
+        - 🔒 Auto-Rebalancing
+        """)
+        if current_plan != "pro":
+            pro_link = get_payment_link("pro")
+            if pro_link and "your_pro_link" not in pro_link:
+                st.link_button("Subscribe to Pro", pro_link, use_container_width=True)
+            else:
+                st.button("Subscribe to Pro", use_container_width=True, disabled=True)
+                st.caption("Payment link coming soon!")
+
+    with col_p3:
+        st.markdown("#### 💎 Fund (£99/month)")
+        st.markdown("""
+        - ✅ Everything in Pro
+        - ✅ Multiple Accounts
+        - ✅ Auto-Rebalancing
+        - ✅ Priority Support
+        - ✅ Weekly Reports
+        - ✅ Custom Strategies
+        """)
+        if current_plan != "fund":
+            fund_link = get_payment_link("fund")
+            if fund_link and "your_fund_link" not in fund_link:
+                st.link_button("Subscribe to Fund", fund_link, use_container_width=True)
+            else:
+                st.button("Subscribe to Fund", use_container_width=True, disabled=True)
+                st.caption("Payment link coming soon!")
+
+    st.markdown("---")
+    st.caption("⚠️ Trading involves risk. Past performance does not guarantee future results.")
+
+    # ==========================================
+    # ADMIN MANUAL UPGRADE/TESTING (Only visible to admins)
+    # ==========================================
+    if user_tier == "admin":
+        st.markdown("---")
+        st.markdown("### 🔧 Admin Panel: Manual Subscription Management")
+        st.warning("⚠️ This section is only visible to Admins. Use this to manually upgrade/downgrade users for testing before Stripe webhooks are fully configured.")
+
+        all_users = get_all_users_with_tiers(db_upgrade) if TIERS_AVAILABLE else []
+        if all_users:
+            admin_col1, admin_col2 = st.columns(2)
+            
+            with admin_col1:
+                st.markdown("#### Upgrade User")
+                upgrade_user_list = [u["username"] for u in all_users]
+                target_user = st.selectbox("Select User", upgrade_user_list, key="admin_upgrade_user")
+                upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan")
+                
+                if st.button("⬆️ Upgrade User", type="primary"):
+                    db_upgrade = SessionLocal()
+                    success = upgrade_user(db_upgrade, target_user, upgrade_plan)
+                    db_upgrade.close()
+                    if success:
+                        st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!")
+                        st.rerun()
+                    else:
+                        st.error("Upgrade failed.")
+
+            with admin_col2:
+                st.markdown("#### Downgrade User")
+                downgrade_user_list = [u["username"] for u in all_users if u.get("tier") != "starter"]
+                if downgrade_user_list:
+                    target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user")
+                    if st.button("⬇️ Downgrade to Starter"):
+                        db_upgrade = SessionLocal()
+                        success = downgrade_user(db_upgrade, target_down_user)
+                        db_upgrade.close()
+                        if success:
+                            st.success(f"Successfully downgraded {target_down_user} to Starter!")
+                            st.rerun()
+                        else:
+                            st.error("Downgrade failed.")
+                else:
+                    st.info("No paid users to downgrade.")
+
+            # Show current users table
+            st.markdown("#### Current Users & Tiers")
+            st.dataframe(all_users, use_container_width=True, hide_index=True)
+        else:
+            st.info("No users found.")
