@@ -83,6 +83,12 @@ except ImportError:
     DIVIDEND_CALENDAR_AVAILABLE = False
 
 try:
+    from core import ipo_scanner
+    IPO_SCANNER_AVAILABLE = True
+except ImportError:
+    IPO_SCANNER_AVAILABLE = False
+
+try:
     from core.audit import (
         log_audit, get_audit_trail, save_journal_entry,
         get_journal_entries, log_trade_audit, log_deposit_audit,
@@ -373,6 +379,10 @@ class TradingEngine:
             "data_source": "none",
         }
 
+        # --- IPO & NEW LISTINGS ---
+        self.known_symbols = ipo_scanner.load_known_symbols() if IPO_SCANNER_AVAILABLE else []
+        self.last_ipo_scan_date = None  # Only scan IPOs once per day
+
         self.log_dir = Path("data/trading_logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir = Path("data/exports")
@@ -387,6 +397,7 @@ class TradingEngine:
 
     def set_username(self, username: str):
         self._username = username
+        
 
     # ==========================================
     # BUCKET SYSTEM: SAVE / LOAD / MIGRATE
@@ -2741,6 +2752,19 @@ class TradingEngine:
             except Exception as e:
                 self._log_error(f"Dividend check error: {e}")
 
+            # --- Check for new listings & IPOs (once per day) ---
+            try:
+                if IPO_SCANNER_AVAILABLE:
+                    today_date = datetime.now().date().isoformat()
+                    # Only run the full scan once per day to avoid API spam
+                    if self.last_ipo_scan_date != today_date:
+                        ipo_results = self.scan_new_listings()
+                        # Optionally auto-add new symbols if setting is enabled
+                        if self.settings.get("watchlist_auto_add", False) and ipo_results.get("new_symbols"):
+                            self.auto_add_new_to_watchlist(ipo_results["new_symbols"])
+            except Exception as e:
+                self._log_error(f"IPO scan error in cycle: {e}")
+
             try:
                 if self.settings.get("auto_extract_profits", True):
                     ov = self.get_bucket_overview()
@@ -2886,5 +2910,72 @@ class TradingEngine:
             "audit_available": AUDIT_AVAILABLE,
             "encryption_available": ENCRYPTION_AVAILABLE,
             "encryption_ready": ENCRYPTION_READY,
-            "terms_accepted": self.terms_accepted,
+            "terms_accepted": self.terms_accepted
         }
+    # ==========================================
+    # IPO & NEW LISTINGS DETECTION
+    # ==========================================
+
+    def scan_new_listings(self) -> Dict:
+        """Scan for newly tradable stocks on Alpaca and upcoming IPOs."""
+        if not IPO_SCANNER_AVAILABLE:
+            return {"status": "error", "message": "IPO Scanner module not available"}
+        if not self.api or not self.connected:
+            return {"status": "error", "message": "Not connected to Alpaca"}
+
+        results = {
+            "new_symbols": [],
+            "upcoming_ipos": [],
+            "alert_message": "",
+            "status": "success"
+        }
+
+        try:
+            # 1. Detect newly tradable symbols on Alpaca
+            new_symbols = ipo_scanner.detect_new_symbols(self.api)
+            if new_symbols:
+                results["new_symbols"] = new_symbols
+                self._log_error(f"IPO Scanner: Found {len(new_symbols)} newly tradable stocks: {', '.join(new_symbols[:10])}")
+
+            # 2. Fetch upcoming IPOs from Finnhub (only once per day to save API calls)
+            today = datetime.now().date().isoformat()
+            if self.last_ipo_scan_date != today:
+                upcoming = ipo_scanner.get_upcoming_ipos(days_ahead=7)
+                if upcoming:
+                    results["upcoming_ipos"] = upcoming
+                    self.last_ipo_scan_date = today
+                    self._log_error(f"IPO Scanner: Found {len(upcoming)} upcoming IPOs")
+
+            # 3. Format and send Discord alert if anything was found
+            if new_symbols or results["upcoming_ipos"]:
+                alert_msg = ipo_scanner.format_ipo_alert(new_symbols, results["upcoming_ipos"])
+                results["alert_message"] = alert_msg
+                self.send_alert(f"🔔 **New Listings Alert!**\n\n{alert_msg}")
+
+        except Exception as e:
+            results["status"] = "error"
+            results["message"] = str(e)
+            self._log_error(f"IPO Scanner error: {e}")
+
+        return results
+
+    def auto_add_new_to_watchlist(self, new_symbols: list) -> Dict:
+        """Optionally add newly detected symbols to the watchlist."""
+        if not new_symbols:
+            return {"status": "error", "message": "No symbols provided"}
+
+        current_watchlist = self.settings.get("watchlist", [])
+        added = []
+
+        for symbol in new_symbols:
+            if symbol not in current_watchlist:
+                current_watchlist.append(symbol)
+                added.append(symbol)
+
+        if added:
+            self.settings["watchlist"] = current_watchlist
+            self.save_settings()
+            self._log_error(f"Auto-added {len(added)} new symbols to watchlist: {', '.join(added)}")
+            return {"status": "success", "added": added, "message": f"Added {len(added)} symbols to watchlist"}
+        
+        return {"status": "success", "added": [], "message": "No new symbols to add"}
