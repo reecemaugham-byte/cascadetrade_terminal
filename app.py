@@ -493,38 +493,102 @@ with st.sidebar:
         current_end = current_sub.get("end_date", "N/A")
 
         if current_plan != "starter":
-            st.success(f"🎉 You are currently on the **{current_plan.title()}** plan (Status: {current_status.title()}).")
+            st.success(f"🎉 You are on the **{current_plan.title()}** plan")
             if current_end and current_end != "None":
-                st.caption(f"Your current billing period ends on: {current_end}")
+                st.caption(f"Renews: {current_end}")
         else:
-            st.info("You are currently on the **Starter (Free)** plan.")
+            st.info("You are on the **Starter (Free)** plan")
 
         st.markdown("---")
-        col_p1, col_p2, col_p3 = st.columns(3)
 
-        with col_p1:
-            st.markdown("#### 🆓 Starter")
-            st.markdown("- ✅ Paper Trading\n- ✅ Basic Signals\n- ✅ 3-Bucket System\n- 🔒 Advanced Signals\n- 🔒 OpenAI Sentiment\n- 🔒 Live Trading\n- 🔒 DRIP Calculator")
+        # ---- STARTER ----
+        with st.container(border=True):
+            st.markdown("🆓 **Starter — Free**")
+            st.caption("Paper trading • Basic signals • 3-Bucket system")
+            st.markdown("""
+<small>
 
-        with col_p2:
-            st.markdown("#### ⚡ Pro (£29/m)")
-            st.markdown("- ✅ Everything in Starter\n- ✅ Advanced Signals\n- ✅ OpenAI Sentiment\n- ✅ Live Trading\n- ✅ DRIP Calculator\n- ✅ Profit Skimming\n- 🔒 Multiple Accounts")
+✅ Paper Trading &nbsp; ✅ Basic Signals &nbsp; ✅ 3-Bucket System  
+🔒 Advanced Signals &nbsp; 🔒 OpenAI Sentiment &nbsp; 🔒 Live Trading  
+🔒 DRIP Calculator &nbsp; 🔒 Profit Skimming
+
+</small>
+""", unsafe_allow_html=True)
+
+        # ---- PRO ----
+        with st.container(border=True):
+            st.markdown("⚡ **Pro — £29/m**")
+            st.caption("Advanced signals • AI sentiment • Live trading")
+            st.markdown("""
+<small>
+
+✅ Everything in Starter &nbsp; ✅ Advanced Signals &nbsp; ✅ OpenAI Sentiment  
+✅ Live Trading &nbsp; ✅ DRIP Calculator &nbsp; ✅ Profit Skimming  
+🔒 Multiple Accounts
+
+</small>
+""", unsafe_allow_html=True)
             if current_plan != "pro":
                 pro_link = get_payment_link("pro") if PAYMENTS_AVAILABLE else "#"
                 if pro_link and "your_pro_link" not in pro_link:
-                    st.link_button("Subscribe to Pro", pro_link, use_container_width=True)
+                    st.link_button("⚡ Upgrade to Pro", pro_link, use_container_width=True)
                 else:
-                    st.button("Subscribe to Pro", use_container_width=True, disabled=True)
+                    st.button("⚡ Upgrade to Pro", use_container_width=True, disabled=True, key="sidebar_pro_btn")
+            else:
+                st.success("✅ Current plan")
 
-        with col_p3:
-            st.markdown("#### 💎 Fund (£99/m)")
-            st.markdown("- ✅ Everything in Pro\n- ✅ Multiple Accounts\n- ✅ Auto-Rebalancing\n- ✅ Weekly Reports\n- ✅ Priority Support")
+        # ---- FUND ----
+        with st.container(border=True):
+            st.markdown("💎 **Fund — £99/m**")
+            st.caption("Multi-account • Auto-rebalancing • Weekly reports")
+            st.markdown("""
+<small>
+
+✅ Everything in Pro &nbsp; ✅ Multiple Accounts &nbsp; ✅ Auto-Rebalancing  
+✅ Weekly Reports &nbsp; ✅ Priority Support
+
+</small>
+""", unsafe_allow_html=True)
             if current_plan != "fund":
                 fund_link = get_payment_link("fund") if PAYMENTS_AVAILABLE else "#"
                 if fund_link and "your_fund_link" not in fund_link:
-                    st.link_button("Subscribe to Fund", fund_link, use_container_width=True)
+                    st.link_button("💎 Upgrade to Fund", fund_link, use_container_width=True)
                 else:
-                    st.button("Subscribe to Fund", use_container_width=True, disabled=True)
+                    st.button("💎 Upgrade to Fund", use_container_width=True, disabled=True, key="sidebar_fund_btn")
+            else:
+                st.success("✅ Current plan")
+
+        # ---- ADMIN ----
+        if user_tier == "admin" and TIERS_AVAILABLE:
+            st.markdown("---")
+            st.markdown("### 🔧 Admin Panel")
+            db_upgrade = SessionLocal()
+            all_users = get_all_users(db_upgrade) if TIERS_AVAILABLE else []
+            if all_users:
+                admin_col1, admin_col2 = st.columns(2)
+                with admin_col1:
+                    st.markdown("#### Upgrade User")
+                    upgrade_user_list = [u["username"] for u in all_users]
+                    target_user = st.selectbox("Select User", upgrade_user_list, key="admin_upgrade_user")
+                    upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan")
+                    if st.button("⬆️ Upgrade User", type="primary"):
+                        success = upgrade_user(db_upgrade, target_user, upgrade_plan)
+                        if success: st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!"); st.rerun()
+                        else: st.error("Upgrade failed.")
+                with admin_col2:
+                    st.markdown("#### Downgrade User")
+                    downgrade_user_list = [u["username"] for u in all_users if u.get("tier") != "starter"]
+                    if downgrade_user_list:
+                        target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user")
+                        if st.button("⬇️ Downgrade to Starter"):
+                            success = downgrade_user(db_upgrade, target_down_user)
+                            if success: st.success(f"Successfully downgraded {target_down_user} to Starter!"); st.rerun()
+                            else: st.error("Downdowngrade failed.")
+                    else:
+                        st.info("No paid users to downgrade.")
+                st.markdown("#### Current Users & Tiers")
+                st.dataframe(all_users, use_container_width=True, hide_index=True)
+            db_upgrade.close()
 
         # Admin Panel inside Upgrade Expander
         if user_tier == "admin" and TIERS_AVAILABLE:
