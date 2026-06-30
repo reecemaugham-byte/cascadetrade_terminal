@@ -654,6 +654,8 @@ with st.sidebar:
                 user_to_update.discord_webhook_url = new_webhook
                 user_to_update.discord_webhook_url_daily = new_webhook_daily
                 user_to_update.openai_api_key = new_openai
+                # Save profit skim to database
+                user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
                 db.commit()
 
                 st.session_state.trading_engine.settings["discord_webhook_url"] = new_webhook
@@ -1865,6 +1867,23 @@ with tab3:
     st.markdown("---")
     st.markdown("##### ⚡ Profit Extraction")
     with st.container(border=True):
+            # --- PROFIT SKIMMING (NEW) ---
+        st.markdown("##### 🛡️ Profit Skimming (Auto-Lock)")
+        skim_pct_current = int(engine.settings.get("profit_skim_pct", 1.0) * 100)
+        profit_skim = st.slider(
+            "Profit Skimming %", 
+            min_value=0, max_value=100, value=skim_pct_current, step=5,
+            help="When the bot sells a profitable stock, this % of the PROFIT goes directly to your 🟡 Withdrawal Pot (locked from trading). The original buy price returns to the trading bucket. 100% = Lock all profits safely."
+        )
+        engine.settings["profit_skim_pct"] = profit_skim / 100
+        
+        if profit_skim == 100:
+            st.success("🛡️ 100% Skimming: ALL profits are locked in your Withdrawal Pot. The bot will only ever trade with its original capital.")
+        elif profit_skim == 0:
+            st.warning("⚠️ 0% Skimming: All profits are reinvested. Higher potential gains, but higher risk of giving profits back to the market.")
+        else:
+            st.info(f"🛡️ {profit_skim}% Skimming: {profit_skim}% of profits go to Withdrawal Pot, {100-profit_skim}% gets reinvested.")
+        st.markdown("---")    
         use_pct = st.checkbox("Use % threshold instead of $ amount", value=engine.settings.get("use_pct_threshold", False))
         if use_pct:
             threshold_pct = st.number_input("Profit Threshold (%)", min_value=5.0, max_value=100.0, value=float(engine.settings.get("profit_threshold_pct", 0.20) * 100), step=1.0, format="%.1f")
