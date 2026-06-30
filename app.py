@@ -3215,6 +3215,10 @@ with tab7:
     # Load current new symbols from engine state
     new_symbols = getattr(engine, 'known_symbols', []) # Temporary display
     
+    # FIX: Initialize variables so they exist before the scan button is clicked
+    ipo_results = None
+    upcoming = None
+
     # We need to store the results of a scan in session state to persist the buttons
     if "new_symbols_found" not in st.session_state:
         st.session_state.new_symbols_found = []
