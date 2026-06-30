@@ -55,7 +55,7 @@ class User(Base):
     penny_pct = Column(Float, default=0.30)
     min_dividend_yield = Column(Float, default=0.03)
     penny_price_threshold = Column(Float, default=5.0)
-    profit_skim_pct = Column(Float, default=1.0)
+    profit_skim_pct = Column(Float, default=1.0)  # 1.0 = 100% skim to withdrawal
 
     # --- Security & Compliance ---
     terms_accepted = Column(Boolean, default=False)
@@ -67,6 +67,13 @@ class User(Base):
     # --- Tier System ---
     tier = Column(String, default="starter")
     tier_expires = Column(DateTime, nullable=True)
+
+    # --- Subscription & Payments (Stripe) ---
+    subscription_plan = Column(String, default="starter")  # starter, pro, fund, admin
+    subscription_id = Column(String, nullable=True)        # Stripe subscription ID
+    subscription_status = Column(String, default="inactive") # active, past_due, cancelled, inactive
+    subscription_start = Column(DateTime, nullable=True)   # When the subscription started
+    subscription_end = Column(DateTime, nullable=True)      # When the current billing period ends
 
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -133,7 +140,7 @@ def migrate_db():
             ('penny_pct', 'FLOAT'),
             ('min_dividend_yield', 'FLOAT'),
             ('penny_price_threshold', 'FLOAT'),
-            ('profit_skim_pct', 'FLOAT'),
+            ('profit_skim_pct', 'FLOAT'),  # Added for profit skimming
             ('terms_accepted', 'BOOLEAN'),
             ('terms_accepted_date', 'DATETIME'),
             ('login_attempts', 'INTEGER'),
@@ -141,6 +148,12 @@ def migrate_db():
             ('last_login', 'DATETIME'),
             ('tier', 'VARCHAR'),
             ('tier_expires', 'DATETIME'),
+            # Added for Stripe Subscriptions
+            ('subscription_plan', 'VARCHAR DEFAULT \'starter\''),
+            ('subscription_id', 'VARCHAR'),
+            ('subscription_status', 'VARCHAR DEFAULT \'inactive\''),
+            ('subscription_start', 'DATETIME'),
+            ('subscription_end', 'DATETIME'),
         ]
         for col_name, col_type in new_columns:
             try:
@@ -189,10 +202,12 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         penny_pct=0.30,
         min_dividend_yield=0.03,
         penny_price_threshold=5.0,
-        profit_skim_pct=1.0,
+        profit_skim_pct=1.0,  # Default to 100% skim (safest)
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
         tier="starter",
+        subscription_plan="starter",      # Stripe defaults
+        subscription_status="inactive",  # Stripe defaults
         is_active=True,
         created_at=datetime.datetime.utcnow(),
     )
@@ -350,6 +365,12 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "alpaca_connected": bool(user.alpaca_api_key),
             "discord_connected": bool(user.discord_webhook_url),
             "openai_connected": bool(user.openai_api_key),
+        },
+        "subscription": {
+            "plan": getattr(user, 'subscription_plan', 'starter'),
+            "status": getattr(user, 'subscription_status', 'inactive'),
+            "start_date": str(user.subscription_start) if hasattr(user, 'subscription_start') and user.subscription_start else None,
+            "end_date": str(user.subscription_end) if hasattr(user, 'subscription_end') and user.subscription_end else None,
         },
         "dividend_history": [],
         "trade_history_count": 0,
