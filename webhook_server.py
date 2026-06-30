@@ -83,7 +83,7 @@ def health_check():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("WEBHOOK_PORT", 5001))
+    port = int(os.environ.get("PORT", os.environ.get("WEBHOOK_PORT", 10000)))
     debug = os.environ.get("WEBHOOK_DEBUG", "false").lower() == "true"
     logger.info(f"🚀 CascadeTrade Webhook Server starting on port {port}")
     app.run(host="0.0.0.0", port=port, debug=debug)
