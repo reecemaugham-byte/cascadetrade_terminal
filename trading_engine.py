@@ -247,6 +247,7 @@ class TradingEngine:
             "penny_price_threshold": 5.0,
             "profit_threshold_amount": 10000,
             "profit_threshold_pct": 0.10,
+            "profit_skim_pct": 1.0,
             "use_pct_threshold": True,
             "auto_extract_profits": True,
             "penny_profits_to_growth": True,
@@ -815,9 +816,13 @@ class TradingEngine:
                     sold.append({"symbol": pos["symbol"], "shares": pos["qty"], "profit_pct": pos["pl_pct"], "value_freed": round(freed, 2), "bucket": self.assign_bucket(pos["symbol"])})
             except Exception as e:
                 self._log_error(f"Profit extraction sell error: {e}")
-        total_freed = sum(s["value_freed"] for s in sold)
-        self.buckets["withdrawal"]["available"] += total_freed
-        self.buckets["withdrawal"]["profits_extracted"] += total_freed
+        total_freed = 0
+        total_skimmed = 0
+        for s in sold:
+            # Apply profit skimming to each sold position
+            skim_result = self._apply_profit_skimming(s["symbol"], s["value_freed"], s["bucket"])
+            total_freed += skim_result["sell_value"]
+            total_skimmed += skim_result["skimmed_to_withdrawal"]
         extraction_entry = {"date": datetime.now().isoformat(), "profit_at_extraction": total_profit, "amount_extracted": total_freed, "threshold": threshold_amount, "positions_sold": sold}
         self.buckets["extraction_history"].append(extraction_entry)
         self._save_buckets()
@@ -856,10 +861,14 @@ class TradingEngine:
             except Exception as e:
                 self._log_error(f"Sell Everything error for {symbol}: {e}")
 
-        # Move freed cash to Withdrawal Pot
+        # Apply profit skimming logic
+        total_to_withdrawal = 0
+        total_to_reinvest = 0
         if total_freed > 0:
-            self.buckets["withdrawal"]["available"] += total_freed
-            self.buckets["withdrawal"]["profits_extracted"] += total_freed
+            for pos in sold:
+                skim_result = self._apply_profit_skimming(pos["symbol"], pos["market_value"], pos["bucket"])
+                total_to_withdrawal += skim_result["skimmed_to_withdrawal"]
+                total_to_reinvest += skim_result["reinvested_to_bucket"]
 
             extraction_entry = {
                 "date": datetime.now().isoformat(),
@@ -1018,6 +1027,52 @@ class TradingEngine:
                         if profit > 0:
                             total_profit += profit
         return total_profit
+
+    # ==========================================
+    # BUCKET SYSTEM: PROFIT SKIMMING (NEW)
+    # ==========================================
+    def _apply_profit_skimming(self, symbol: str, sell_value: float, bucket: str) -> Dict:
+        """
+        When a position is sold at a profit, this calculates how much goes to 
+        the Withdrawal pot (locked) vs back to the trading bucket (reinvest).
+        Skim Percentage: 1.0 (100%) = All profit locked, 0.0 = All profit reinvested.
+        """
+        skim_pct = self.settings.get("profit_skim_pct", 1.0)
+        principal = 0.0
+        
+        # Find the original buy price to calculate profit
+        for t in reversed(self.trade_log):
+            if t.get("symbol") == symbol and t.get("side") == "buy":
+                buy_price = float(t.get("price", 0))
+                qty = float(t.get("qty", 0))
+                if buy_price > 0 and qty > 0:
+                    principal = buy_price * qty
+                break
+                
+        profit = max(0, sell_value - principal)
+        
+        skim_amount = profit * skim_pct
+        reinvest_amount = sell_value - skim_amount
+        
+        # Move skimmed profit to Withdrawal bucket
+        if skim_amount > 0:
+            self.buckets["withdrawal"]["available"] += skim_amount
+            self.buckets["withdrawal"]["profits_extracted"] += skim_amount
+        
+        # Move principal + remaining profit back to the trading bucket
+        if reinvest_amount > 0 and bucket in ["dividend", "growth", "penny"]:
+            self.buckets[bucket]["cash_allocated"] += reinvest_amount
+            
+        return {
+            "status": "success",
+            "sell_value": round(sell_value, 2),
+            "principal": round(principal, 2),
+            "profit": round(profit, 2),
+            "skim_pct": skim_pct,
+            "skimmed_to_withdrawal": round(skim_amount, 2),
+            "reinvested_to_bucket": round(reinvest_amount, 2),
+            "bucket": bucket
+        }
 
     # ==========================================
     # BUCKET SYSTEM: CHECK DIVIDENDS
@@ -1180,6 +1235,7 @@ class TradingEngine:
             "deposit_amount": 1000, "dividend_pct": 0.35, "growth_pct": 0.35, "penny_pct": 0.30,
             "min_dividend_yield": 0.03, "penny_price_threshold": 5.0,
             "profit_threshold_amount": 10000, "profit_threshold_pct": 0.10,
+            "profit_skim_pct": 1.0,
             "use_pct_threshold": True, "auto_extract_profits": True,
             "penny_profits_to_growth": True, "growth_profits_to_dividend": True,
             "dividends_to_withdrawal": True, "original_capital": 100000,
@@ -2563,10 +2619,10 @@ class TradingEngine:
             else:
                 self.send_alert(f"🚨 **Trade Executed!**\n{bucket_icon} **{approval['side'].upper()}** {approval['qty']} shares of **{approval['symbol']}** at ${approval['price']:.2f}\nBucket: {bucket_name} | Stop: {bucket_sl:.0%} | Target: {bucket_tp:.0%}\nReason: {approval.get('reason', 'N/A')}\nConfidence: {approval.get('confidence', 0):.0%}")
 
-            # Move profits after sell
+            # Apply profit skimming after sell
             if approval["side"] == "sell":
-                if bucket == "penny" and self.settings.get("penny_profits_to_growth", True): self.move_profits()
-                elif bucket == "growth" and self.settings.get("growth_profits_to_dividend", True): self.move_profits()
+                sell_value = filled_price * filled_qty
+                self._apply_profit_skimming(approval["symbol"], sell_value, bucket)
 
             return trade_record
         except Exception as e:
