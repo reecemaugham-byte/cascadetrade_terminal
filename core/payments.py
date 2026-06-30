@@ -1,7 +1,7 @@
 """
 core/payments.py
 CascadeTrade Terminal — Subscription & Payment Handling
-Handles Stripe payment links, webhook event processing,
+Handles Stripe Checkout Sessions, webhook event processing,
 and database updates for subscription lifecycle.
 """
 
@@ -26,12 +26,29 @@ logger = logging.getLogger(__name__)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-# Stripe Payment Links — create these in your Stripe Dashboard
-# (Product → Payment Links → Copy link)
-# Once created, paste the URLs below.
+# Static Payment Links — used as fallback if Checkout Session creation fails
+# You created these in your Stripe Dashboard (Products → Payment Links)
 STRIPE_PAYMENT_LINKS = {
     "pro": os.environ.get("STRIPE_PRO_LINK", "https://buy.stripe.com/test_6oU9AMd581WtfmAbepcbC00"),
     "fund": os.environ.get("STRIPE_FUND_LINK", "https://buy.stripe.com/test_dRm6oA1mqbx3b6k96hcbC01"),
+}
+
+# Plan definitions for Checkout Session creation
+STRIPE_PLANS = {
+    "pro": {
+        "name": "CascadeTrade Pro",
+        "amount": 2900,      # £29.00 in pence (change to cents if using USD)
+        "currency": "gbp",    # Change to "usd" if pricing in US dollars
+        "interval": "month",
+        "description": "Advanced signals, AI sentiment, live trading, DRIP calculator, profit skimming",
+    },
+    "fund": {
+        "name": "CascadeTrade Fund",
+        "amount": 9900,      # £99.00 in pence (change to cents if using USD)
+        "currency": "gbp",   # Change to "usd" if pricing in US dollars
+        "interval": "month",
+        "description": "Everything in Pro plus multiple accounts, auto-rebalancing, weekly reports, priority support",
+    },
 }
 
 
@@ -157,28 +174,70 @@ def check_subscription(db: SessionLocal, username: str) -> dict:
 
 def get_payment_link(plan: str, username: str = "") -> str:
     """
-    Return the Stripe Checkout Link for a given plan.
+    Create a Stripe Checkout Session and return the URL.
 
-    Appends client_reference_id and metadata to the URL so the webhook
-    handler can identify which user and plan the checkout belongs to.
+    This creates a Checkout Session via the Stripe API, which allows
+    us to pass client_reference_id (username) and metadata (plan)
+    so the webhook handler can identify which user paid and which
+    plan they chose.
 
-    Stripe Payment Links support these query parameters:
-      ?client_reference_id=<username>&prefilled_promo_code=<code>
-      &metadata[plan]=<plan>
-
-    The client_reference_id is returned in the checkout.session.completed
-    webhook event, allowing us to map the payment to a CascadeTrade user.
+    Falls back to static Payment Links if the Stripe API call fails.
     """
-    base_url = STRIPE_PAYMENT_LINKS.get(plan.lower(), "")
-    if not base_url:
-        return ""
+    plan_lower = plan.lower()
 
-    if username:
-        separator = "&" if "?" in base_url else "?"
-        link = f"{base_url}{separator}client_reference_id={username}&metadata[plan]={plan.lower()}"
-        return link
+    if not STRIPE_SECRET_KEY:
+        logger.warning("STRIPE_SECRET_KEY not set — falling back to static payment links")
+        return STRIPE_PAYMENT_LINKS.get(plan_lower, "")
 
-    return base_url
+    if plan_lower not in STRIPE_PLANS:
+        logger.warning(f"Unknown plan: {plan_lower}")
+        return STRIPE_PAYMENT_LINKS.get(plan_lower, "")
+
+    plan_info = STRIPE_PLANS[plan_lower]
+
+    try:
+        import stripe
+        stripe.api_key = STRIPE_SECRET_KEY
+
+        # Get the app URL for success/cancel redirects
+        app_url = os.environ.get("APP_URL", "https://quantpro-6flqy.ondigitalocean.app")
+
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": plan_info["currency"],
+                    "product_data": {
+                        "name": plan_info["name"],
+                        "description": plan_info.get("description", ""),
+                    },
+                    "unit_amount": plan_info["amount"],
+                    "recurring": {
+                        "interval": plan_info["interval"],
+                    },
+                },
+                "quantity": 1,
+            }],
+            client_reference_id=username or "",
+            metadata={
+                "plan": plan_lower,
+                "username": username or "",
+            },
+            success_url=f"{app_url}/?payment=success&plan={plan_lower}",
+            cancel_url=f"{app_url}/?payment=cancelled",
+        )
+
+        logger.info(f"Created Stripe Checkout Session for '{username}' ({plan_lower}): {session.id}")
+        return session.url
+
+    except Exception as e:
+        logger.error(f"Stripe Checkout Session creation failed: {e}")
+        # Fallback to static payment links
+        fallback_url = STRIPE_PAYMENT_LINKS.get(plan_lower, "")
+        if fallback_url:
+            logger.warning(f"Falling back to static payment link for {plan_lower}")
+        return fallback_url
 
 
 # ==========================================
@@ -235,39 +294,53 @@ def find_user_for_subscription(db: SessionLocal, event_data: dict):
 
     Tries multiple strategies:
     1. client_reference_id (set during checkout via get_payment_link)
-    2. Stripe subscription_id stored in our DB
-    3. Email match (if we stored the email)
+    2. metadata.username (set during checkout via get_payment_link)
+    3. Stripe subscription_id stored in our DB
+    4. Email match (if we stored the user's email)
 
     Returns the User object or None.
     """
-    # Strategy 1: client_reference_id (from payment link URL parameter)
+    # Strategy 1: client_reference_id (from checkout session)
     client_ref = event_data.get("client_reference_id", "")
     if client_ref:
         user = db.query(User).filter(User.username == client_ref).first()
         if user:
+            logger.info(f"Found user by client_reference_id: {client_ref}")
             return user
 
-    # Strategy 2: Look up by Stripe subscription ID in our database
+    # Strategy 2: metadata.username (from checkout session)
+    metadata = event_data.get("metadata", {})
+    if metadata and metadata.get("username"):
+        username = metadata["username"]
+        user = db.query(User).filter(User.username == username).first()
+        if user:
+            logger.info(f"Found user by metadata username: {username}")
+            return user
+
+    # Strategy 3: Look up by Stripe subscription ID in our database
     sub_id = event_data.get("subscription", "")
     if sub_id and isinstance(sub_id, str):
         user = get_user_by_subscription_id(db, sub_id)
         if user:
+            logger.info(f"Found user by subscription_id: {sub_id}")
             return user
 
-    # Strategy 3: Look up by Stripe customer email
+    # Strategy 4: Look up by Stripe customer email
     customer_email = ""
     customer_details = event_data.get("customer_details", {})
     if customer_details:
         customer_email = customer_details.get("email", "")
     if not customer_email:
-        # Some events have it at a different path
         customer_email = event_data.get("customer_email", "")
 
     if customer_email:
         user = db.query(User).filter(User.email == customer_email).first()
         if user:
+            logger.info(f"Found user by email: {customer_email}")
             return user
 
+    logger.error(f"Could not find user for checkout event: {event_data.get('id', 'unknown')}. "
+                 f"client_ref={client_ref}, metadata={metadata}, sub_id={sub_id}, email={customer_email}")
     return None
 
 
@@ -276,24 +349,23 @@ def determine_plan_from_event(event_data: dict) -> str:
     Determine the plan (pro/fund) from a Stripe event.
 
     Checks metadata first (set via get_payment_link), then falls back
-    to looking up the price ID in the line items.
+    to looking at the amount.
     """
-    # Strategy 1: metadata[plan] from payment link URL parameter
+    # Strategy 1: metadata from checkout session
     metadata = event_data.get("metadata", {})
     if metadata and metadata.get("plan"):
         plan = metadata["plan"].lower()
         if plan in ("pro", "fund", "admin"):
             return plan
 
-    # Strategy 2: Try to match by amount (fallback)
-    # Pro = $29/month, Fund = $99/month
+    # Strategy 2: Try to match by amount
     amount_total = event_data.get("amount_total", 0)
     if amount_total:
-        amount_dollars = amount_total / 100  # Stripe amounts are in cents
-        if abs(amount_dollars - 99) < 1:
-            return "fund"
-        elif abs(amount_dollars - 29) < 1:
-            return "pro"
+        amount_dollars = amount_total / 100  # Stripe amounts are in cents/pence
+        # Check against known plan prices
+        for plan_key, plan_info in STRIPE_PLANS.items():
+            if abs(amount_dollars - (plan_info["amount"] / 100)) < 1:
+                return plan_key
 
     return ""
 
