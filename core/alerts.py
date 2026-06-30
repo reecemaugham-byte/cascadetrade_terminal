@@ -3,13 +3,15 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
+
 def send_discord_alert(webhook_url: str, message: str):
+    """Send a text message to a Discord channel via webhook."""
     if not webhook_url or "discord.com/api/webhooks" not in webhook_url:
         return False
 
     payload = {
         "content": message,
-        "username": "QuantPro Bot",
+        "username": "CascadeTrade Bot",
     }
 
     try:
@@ -23,18 +25,19 @@ def send_discord_alert(webhook_url: str, message: str):
         logging.error(f"Discord connection error: {e}")
         return False
 
+
 def send_discord_file(webhook_url: str, file_data: bytes, filename: str, message: str):
-    """Uploads a file (like a CSV) directly to a Discord channel."""
+    """Upload a file (like a CSV) directly to a Discord channel via webhook."""
     if not webhook_url or "discord.com/api/webhooks" not in webhook_url:
         return False
 
     payload = {
         "content": message,
-        "username": "QuantPro Bot",
+        "username": "CascadeTrade Bot",
     }
-    
+
     files = {
-        "file": (filename, file_data, "text/csv")
+        "file": (filename, file_data, "text/csv"),
     }
 
     try:
