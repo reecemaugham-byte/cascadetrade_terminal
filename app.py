@@ -696,84 +696,206 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
     ["📚 Academy", "🔬 Scanner & Analysis", "💰 Auto Trade", "📊 Portfolio", "🔬 Backtest", "💎 Dividends"])
 
 # ==========================================
-# TAB 1: ACADEMY (Expanded significantly)
+# TAB 1: ACADEMY (Education Content)
 # ==========================================
 with tab1:
     st.markdown("### 📚 Academy: How It Works")
     st.caption("Everything you need to know about QuantPro Terminal. Click any topic to expand it.")
 
-    with st.expander("🎓 Beginner's Guide to the Stock Market"):
+    # 1. Getting Started
+    with st.expander("🎓 1. Getting Started (Beginner)"):
         st.markdown("""
-**1. What is a Stock?** A stock is a tiny piece of ownership in a company. When you buy a share of Apple (AAPL), you own a small part of Apple.
+**What is QuantPro Terminal?**
+QuantPro is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
 
-**2. What is a Ticker?** A short code to identify a stock (e.g., `TSLA` = Tesla, `KO` = Coca-Cola).
+**What are the 3 buckets?**
+Your money is split into three buckets based on risk:
+- 🟢 **Dividend Pot:** Steady income, lower risk, slow growth. Buys stocks that pay dividends.
+- 🔵 **Growth Pot:** Moderate risk, faster growth, more volatility. Buys large companies without dividends.
+- 🔴 **Penny Pot:** High risk, high reward potential, can lose everything. Buys stocks under $5.
+- 🟡 **Withdrawal Pot:** Your profit pot. LOCKED from trading. Only you can withdraw from here.
 
-**3. Price & Volume** — **Price:** How much one share costs. **Volume:** How many shares are being bought/sold. High volume means lots of interest.
+**How does the bot decide what to buy/sell?**
+The bot uses technical indicators (RSI, MACD, Bollinger Bands, Volume) to find stocks that are oversold (cheap) or overbought (expensive). When a stock hits a buy signal, it checks your risk settings before buying.
 
-**4. The Goal** — Buy low, sell high. The bot tries to find stocks that are oversold (cheap) and likely to bounce back, then sells when they reach a profit target.
+**What is paper trading vs real money?**
+QuantPro starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
 
-**5. Paper Trading** — QuantPro starts in Paper Trading mode by default. This means fake money, real market data. You can't lose real money in paper mode. **Always start here.**
+**Glossary of terms:**
+- **RSI (Relative Strength Index):** Measures if a stock is overbought (too high) or oversold (too low).
+- **Volume / RVOL:** How many shares are being traded. High volume = strong signal.
+- **Stop Loss:** Auto-sells a stock if it drops by a certain % to prevent big losses.
+- **Take Profit:** Auto-sells a stock when it goes up by a certain % to lock in gains.
+- **Confidence:** How strong the buy/sell signal is (0-100%).
 """)
 
-    with st.expander("📈 Technical Indicators Explained"):
+    # 2. Understanding Risk
+    with st.expander("⚠️ 2. Understanding Risk (Important)"):
         st.markdown("""
-**🔴 RSI (Relative Strength Index)**
-- Measures how fast and how much a stock's price has changed recently
-- Gives a number between **0 and 100**
-- **RSI > 70**: Overbought — might drop soon (potential SELL signal)
-- **RSI < 30**: Oversold — might rise soon (potential BUY signal)
+**What does each slider do?**
+- **Max Positions:** How many stocks you can hold at once. More positions = higher exposure.
+- **Max Position %:** The max % of your portfolio put into one stock. Higher = more concentrated risk.
+- **Daily Loss Limit %:** Stops trading for the day if you lose this %. 3% is safe.
+- **Stop Loss %:** Auto-sells a stock if it drops this %. Tighter (<3%) gets triggered by normal dips.
+- **Take Profit %:** Auto-sells a stock when it rises this %. Higher targets may never be reached.
+- **Min Confidence:** Minimum signal strength required to buy. Lower = more trades, but more false signals.
+- **Min RVOL:** Minimum volume spike required. Lower than 1.0 means trading on low interest.
+- **Penny % Allocation:** How much money goes to penny stocks. They are extremely high risk.
 
-**📊 MACD (Moving Average Convergence Divergence)**
-- Compares two averages of the price to show momentum
-- **Bullish Crossover**: MACD line crosses above signal line (price might go UP)
-- **Bearish Crossover**: MACD line crosses below signal line (price might go DOWN)
+**Why defaults are set to "safe trader" levels:**
+The default settings (Stop Loss 5%, Take Profit 10%, etc.) are designed to protect beginners from blowing up their accounts. They give stocks room to breathe while locking in profits reliably.
 
-**📊 Bollinger Bands**
-- Show a range that the price usually stays within
-- **Price touching lower band**: Stock may be oversold (potential BUY)
-- **Price touching upper band**: Stock may be overbought (potential SELL)
-- **Squeeze**: Bands are narrow → Big move coming soon
+**What happens if you increase risk (with real examples):**
+- **Stop Loss at 2%:** You buy a stock at $100. It drops to $98 (a normal bad day). The bot sells. It goes back up to $110 the next week. You missed the recovery because your stop was too tight.
+- **Daily Loss at 10%:** The market has a bad crash. You lose 10% of your entire portfolio in one day. A 10% loss requires an 11.1% gain just to break even.
+- **Penny Allocation at 50%:** Half your money is in stocks under $5. These companies frequently go bankrupt. You could lose half your account permanently.
 
-**✨ Moving Average Crossover**
-- When the 50-day moving average crosses the 200-day moving average
-- **Golden Cross** (50 crosses above 200): Strong BUY signal
-- **Death Cross** (50 crosses below 200): Strong SELL signal
+**Why penny stocks are dangerous:**
+Penny stocks (under $5) are cheap for a reason—often the companies are failing, have low liquidity, or are subject to scams. While they can double quickly, they can also go to $0 just as fast.
 
-**💥 Volume Spike (RVOL)**
-- Relative Volume compares today's volume to the 20-day average
-- **RVOL > 1.5**: Unusual activity — the signal is stronger
-- **RVOL < 1.0**: Low interest — be cautious
-
-**📉 ATR (Average True Range)**
-- Measures how much a stock typically moves in a day
-- Used for **position sizing**: volatile stocks get smaller positions, calm stocks get larger ones
-- Higher ATR = more volatile = smaller position size
+**The difference between confidence % and signal strength:**
+A stock with 20% confidence means 4 out of 5 indicators are disagreeing. The bot is basically guessing. 25%+ means a slight majority of indicators agree. 50%+ means strong agreement.
 """)
 
-    with st.expander("🪣 The 3-Bucket System"):
+    # 3. The 3-Bucket System
+    with st.expander("🪣 3. The 3-Bucket System"):
         st.markdown("""
-Your money is split into **three buckets** based on risk:
+**How your money is protected:**
+Instead of putting all your money in one place, QuantPro splits it into buckets:
 
-| Bucket | Icon | What It Does | Risk Level | Where Profits Go |
-|--------|------|--------------|-----------|-----------------|
-| **Dividend Pot** | 🟢 | Buys dividend-paying stocks. Holds for income. | Low | Dividends → Withdrawal Pot |
-| **Growth Pot** | 🔵 | Buys big companies without dividends (e.g., AMZN, META). | Medium | Profits → Dividend Pot |
-| **Penny Pot** | 🔴 | Quick trades on stocks under $5. High risk. | High | Profits → Growth Pot |
-| **Withdrawal Pot** | 🟡 | LOCKED. The bot CANNOT trade with this. | None | You withdraw this to your bank |
+🟢 **Dividend Pot (Steady, Slow, Safe):**
+Buys stocks that pay you just for holding them. These are large, established companies (like Coca-Cola or Johnson & Johnson). They don't grow fast, but they pay you cash regularly.
 
-**How stocks are classified:**
-- Price under your Penny Threshold ($5 by default) → 🔴 Penny Pot
-- Dividend yield above your minimum (3% by default) → 🟢 Dividend Pot
-- Everything else → 🔵 Growth Pot
+🔵 **Growth Pot (Moderate Risk, Faster Growth):**
+Buys large companies that don't pay dividends but are growing fast (like Amazon or Meta). More volatile, but higher upside potential.
 
-**Profit flow:** Penny profits → Growth pot → Growth profits → Dividend pot → Dividends → Withdrawal pot (where you can cash out)
+🔴 **Penny Pot (High Risk, High Reward):**
+Buys stocks under $5. These are usually small, new, or struggling companies. They can double in a day, or go to zero. **Never put more than 30% of your money here.**
 
-**Setting allocation to 0%:** You can completely disable any bucket by setting its allocation to 0%. The bot will skip all buy signals for that bucket. This is useful if you only want to trade 1 or 2 strategies.
+🟡 **Withdrawal Pot (LOCKED):**
+Your profit pot. When the bot makes money, it skims a percentage (or all) of the profit into this pot. **The bot CANNOT trade with money in the Withdrawal Pot.** This guarantees you keep your gains.
+
+**How profits flow:**
+Penny Profits → Growth Pot → Growth Profits → Dividend Pot → Dividends → Withdrawal Pot → Your Bank Account
+
+**Why this system protects your capital:**
+If the market crashes, your Dividend pot might drop 5%, your Growth pot might drop 10%, and your Penny pot might drop 30%. But because your money is spread out, and your profits are locked in Withdrawal, a crash won't wipe you out.
+
+**Setting allocation to 0%:**
+You can completely disable any bucket by setting its allocation to 0%. The bot will skip all buy signals for that bucket. This is useful if you only want to trade 1 or 2 strategies.
 """)
 
-    with st.expander("⚡ Profit Extraction"):
+    # 4. How Signals Work
+    with st.expander("📊 4. How Signals Work"):
         st.markdown("""
-**How it works:**
+**What is RSI (Relative Strength Index)?**
+RSI gives a number between 0 and 100. If RSI is below 30 (oversold), the stock has dropped a lot and might bounce back (potential BUY). If RSI is above 70 (overbought), the stock has risen a lot and might drop (potential SELL).
+
+**What is MACD?**
+Moving Average Convergence Divergence. It compares two moving averages of a stock's price. When the fast line crosses above the slow line, it's a bullish signal (price might go UP). When it crosses below, it's a bearish signal (price might go DOWN).
+
+**What are Bollinger Bands?**
+They draw a "band" around the stock's price. If the price touches the bottom band, the stock is oversold (cheap). If it touches the top band, it's overbought (expensive). When the band squeezes narrow, a big move is coming.
+
+**What does confidence % actually mean?**
+It's how many indicators agree. If RSI says buy, MACD says buy, and Bollinger says buy, confidence is high (e.g., 60-80%). If RSI says buy but MACD says sell, confidence is low (e.g., 15-20%). The bot only buys when confidence is above your minimum threshold.
+
+**Why VIX filter blocks trades in volatile markets:**
+The VIX is the "Fear Index". When VIX is above 28, the market is panicking. During panics, normal signals don't work—stocks drop together regardless of fundamentals. The VIX filter prevents the bot from buying during market crashes.
+
+**What is ATR position sizing?**
+Average True Range measures how much a stock typically moves in a day. A volatile stock might move $5 a day; a calm stock might move $0.50. ATR position sizing makes sure you buy fewer shares of volatile stocks and more shares of calm stocks, keeping your risk level consistent.
+
+**QuantPro uses multiple indicators together:**
+
+| Indicator | What It Detects | Weight | Tier |
+|-----------|----------------|--------|------|
+| 🔴 RSI | Overbought/Oversold | 1.0 | Free |
+| 📊 MACD | Momentum crossovers | 1.2 | Pro |
+| 📈 Bollinger Bands | Price touching extremes | 0.8 | Pro |
+| ✨ MA Crossover | Trend changes (Golden/Death Cross) | 1.5 | Pro |
+| 💥 Volume Spike | Unusual activity | 0.6 | Free |
+| 📉 ATR | Volatility (position sizing) | 0.5 | Pro |
+| 🛡️ VIX Filter | Market fear (blocks buys when VIX > 28) | N/A | Pro |
+""")
+
+    # 5. Reading the Dashboard
+    with st.expander("🖥️ 5. Reading the Dashboard"):
+        st.markdown("""
+**What each number means:**
+- **Portfolio Value:** Total value of your stocks + cash.
+- **Equity:** How much you actually own (Portfolio Value minus borrowed money).
+- **Cash:** How much money is sitting in your account, not invested in stocks.
+- **Buying Power:** How much you can spend on new stocks today.
+- **Daily P&L:** How much profit or loss you made today.
+
+**How to read your P&L:**
+🟢 Green numbers mean profit. 🔴 Red numbers mean loss. P&L updates in real-time as stock prices change throughout the day.
+
+**What the bucket overview tells you:**
+The 4 colored boxes show how much money is in each bucket. The important one is **🟡 Withdrawal**—this is money the bot CANNOT touch. It's your locked-in profit.
+
+**How to interpret signals vs near-signals:**
+- **Signal:** The stock meets all your criteria (RSI, Volume, Confidence). The bot wants to buy/sell it.
+- **Near Signal:** The stock is close to a signal but not quite there (e.g., RSI is 32 but your threshold is 30). The bot is watching it but won't trade yet.
+""")
+
+    # 6. Common Mistakes
+    with st.expander("❌ 6. Common Mistakes"):
+        st.markdown("""
+**1. Don't move sliders to risky levels without understanding**
+If you set Stop Loss to 2%, you will get sold out of trades constantly on normal dips. If you set Daily Loss to 10%, one bad day can wipe out weeks of gains. The red warnings in the settings are there for a reason.
+
+**2. Don't turn off stop losses**
+Stop losses are your emergency parachute. Without them, a stock that drops 50% requires a 100% gain just to break even. Always use stops.
+
+**3. Don't put all capital in the penny bucket**
+Penny stocks can be exciting, but they are extremely risky. If you put 100% of your money in the penny bucket, you could lose it all. Keep penny allocation at 30% or below.
+
+**4. Paper trade FIRST before real money**
+Paper trading uses fake money. Use it for at least 2-4 weeks to see how the bot performs. Only switch to real money when you are comfortable with the wins AND the losses.
+
+**5. Don't chase losses**
+If the bot loses money on a trade, don't immediately crank up the risk settings to "make it back faster." This is how gamblers lose everything. Stick to the safe defaults and let the bot's statistical edge play out over time.
+
+**6. Check the Withdrawal Pot regularly**
+When profits accumulate in the Withdrawal Pot, actually withdraw them to your bank account. That's the whole point of profit skimming!
+""")
+
+    # 7. FAQ
+    with st.expander("❓ 7. FAQ"):
+        st.markdown("""
+**How do I connect Alpaca?**
+1. Go to [Alpaca Markets](https://alpaca.markets) and create a free account.
+2. Go to your Paper Trading dashboard and generate API Keys.
+3. Paste the Key and Secret into the Settings panel in the sidebar.
+4. Click "Connect" in the Auto Trade tab.
+
+**Paper trading vs live trading?**
+Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. QuantPro starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
+
+**How do I withdraw profits?**
+The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this money out:
+1. Click "Move from Withdrawal" or go to your Alpaca dashboard.
+2. Transfer the funds from your Alpaca account to your linked bank account.
+
+**What happens if the bot crashes?**
+QuantPro runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
+
+**How do I cancel my subscription?**
+Go to the Upgrade page in the sidebar and click "Manage Subscription" or contact support.
+
+**Is this financial advice?**
+No. QuantPro Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
+""")
+
+    # ==========================================
+    # OPERATIONAL GUIDE SECTIONS (From original)
+    # ==========================================
+
+    with st.expander("⚡ Profit Extraction & Skimming"):
+        st.markdown("""
+**How profit extraction works:**
 - The bot tracks your total profit relative to your original capital
 - When your profit crosses a threshold, it automatically sells your most profitable positions
 - The freed cash goes into your **Withdrawal Pot** (locked from trading)
@@ -787,41 +909,35 @@ Your money is split into **three buckets** based on risk:
 
 **Manual extract:** Click "⚡ Extract Profits Now" in the Auto Trade tab to force an extraction at any time.
 
-> 💡 **Tip:** The withdrawal pot is LOCKED from trading. The bot cannot use this money to buy stocks. This protects your profits.
+**🛡️ Profit Skimming (Auto-Lock):**
+- When the bot sells a profitable stock, it splits the money based on your Profit Skimming % setting.
+- **100% Skim (Safest):** All profit goes to the 🟡 Withdrawal Pot. Only the original buy price goes back to the trading bucket. The bot can NEVER spend your profits.
+- **50% Skim:** Half the profit goes to Withdrawal, half goes back to trading to compound.
+- **0% Skim:** All money (original + profit) goes back to trading. Highest risk of giving back profits.
+
+> 💡 **Tip:** The withdrawal pot is LOCKED from trading. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
 """)
 
-    with st.expander("🛡️ Risk Management"):
+    with st.expander("🛑 Sell Everything & Rebalance"):
         st.markdown("""
-**Stop Losses (per bucket):**
-- 🟢 Dividend: 8% (wider, because dividend stocks are less volatile)
-- 🔵 Growth: 6% (moderate)
-- 🔴 Penny: 3% (tight, because penny stocks can drop fast)
+**🛑 Sell Everything:**
+- Sells ALL open positions immediately
+- All proceeds go into your 🟡 **Withdrawal Pot** (LOCKED from trading)
+- The bot cannot use Withdrawal Pot money to buy stocks
+- Use this when you want to exit the market completely or protect profits
 
-**Trailing Stops:**
-- When a stock rises 5%+, the bot sets a trailing stop to protect gains
-- If the stock drops back below the trail, it sells automatically
+**🔄 Rebalance:**
+- Sells everything, then redistributes the cash across your 3 buckets
+- Follows your allocation percentages (e.g., 35% Dividend, 35% Growth, 30% Penny)
+- The bot will then buy new positions according to its signals
 
-**Take Profit (per bucket):**
-- 🟢 Dividend: 15% (longer holds, bigger targets)
-- 🔵 Growth: 12% (moderate)
-- 🔴 Penny: 8% (quick profits)
+**💸 Move from Withdrawal:**
+- Move money from your 🟡 Withdrawal Pot back into a specific trading bucket
+- Options: Move to 🟢 Dividend, 🔵 Growth, or 🔴 Penny
+- Or redistribute across all 3 buckets based on your allocation percentages
+- Once money moves to a trading bucket, the bot CAN use it to buy stocks
 
-**VIX Filter:**
-- When the VIX (Fear Index) is above 28, the bot blocks all new BUY signals
-- This prevents buying during market panics
-- SELL signals and stop losses still work normally
-
-**Daily Loss Limit:**
-- If your daily losses exceed a percentage (default 3%), the bot stops trading for the day
-- This prevents a single bad day from wiping out your portfolio
-
-**Sector Limits:**
-- You can limit how many stocks from the same sector you hold (default: 3)
-- This prevents over-concentration in one industry
-
-**0% Allocation Guard:**
-- If you set a bucket's allocation to 0%, the bot will skip all BUY signals for that bucket
-- This lets you disable any bucket entirely — useful if you only want to trade dividend stocks, for example
+**⚠️ Safety:** The Withdrawal Pot is always protected. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
 """)
 
     with st.expander("💎 Dividends & DRIP"):
@@ -844,54 +960,6 @@ Your money is split into **three buckets** based on risk:
 **Dividend Stock Comparison:**
 - Compare dividend yields and growth rates across your watchlist
 - Helps you find the best dividend stocks for your Dividend Pot
-""")
-
-    with st.expander("🔬 Advanced Signals"):
-        st.markdown("""
-QuantPro uses **multiple indicators together** for stronger signals:
-
-| Indicator | What It Detects | Weight | Tier |
-|-----------|----------------|--------|------|
-| 🔴 RSI | Overbought/Oversold | 1.0 | Free |
-| 📊 MACD | Momentum crossovers | 1.2 | Pro |
-| 📈 Bollinger Bands | Price touching extremes | 0.8 | Pro |
-| ✨ MA Crossover | Trend changes (Golden/Death Cross) | 1.5 | Pro |
-| 💥 Volume Spike | Unusual activity | 0.6 | Free |
-| 📉 ATR | Volatility (position sizing) | 0.5 | Pro |
-| 🛡️ VIX Filter | Market fear (blocks buys when VIX > 28) | N/A | Pro |
-
-**How signals are combined:**
-- Each indicator generates a signal (BUY, SELL, or HOLD) with a confidence score
-- Signals are **weighted** and combined into a single score
-- If multiple indicators agree, confidence goes up
-- If they disagree, confidence goes down
-- A signal is only acted on if confidence exceeds the **minimum threshold** (configurable per bucket)
-
-**Multi-Timeframe Confirmation:**
-- Checks if the weekly and daily charts agree
-- A BUY signal is stronger if both timeframes confirm it
-- Available in Pro tier
-""")
-
-    with st.expander("📏 Position Sizing & Limits"):
-        st.markdown("""
-**How position sizes are calculated:**
-
-**Default method (percentage-based):**
-- Each bucket has a max position % (default: 4-8% depending on bucket)
-- If your equity is $100,000 and max position is 8%, you can invest up to $8,000 in one stock
-
-**ATR-based position sizing (Pro tier):**
-- Uses the stock's Average True Range (ATR) to determine position size
-- More volatile stocks get smaller positions
-- Less volatile stocks get larger positions
-- Formula: Position Size = (Equity × Risk%) / (2 × ATR)
-
-**Max positions:** Controls how many stocks you can hold at once (default: 10). This prevents over-diversification.
-
-**Sector limits:** Maximum stocks from the same industry sector (default: 3). Prevents over-concentration.
-
-**Daily loss limit:** Stops trading if daily losses exceed a percentage (default: 3%). Protects against cascade losses.
 """)
 
     with st.expander("📊 Backtesting"):
@@ -991,28 +1059,6 @@ These metrics are available in the Portfolio tab when you have enough trade hist
 - Paper trading uses fake money — you cannot lose real money
 - You can stop the bot at any time by clicking "Stop Bot"
 - You can manually scan once by clicking "Scan Once"
-""")
-
-    with st.expander("🛑 Sell Everything & Rebalance"):
-        st.markdown("""
-**🛑 Sell Everything:**
-- Sells ALL open positions immediately
-- All proceeds go into your 🟡 **Withdrawal Pot** (LOCKED from trading)
-- The bot cannot use Withdrawal Pot money to buy stocks
-- Use this when you want to exit the market completely or protect profits
-
-**🔄 Rebalance:**
-- Sells everything, then redistributes the cash across your 3 buckets
-- Follows your allocation percentages (e.g., 35% Dividend, 35% Growth, 30% Penny)
-- The bot will then buy new positions according to its signals
-
-**💸 Move from Withdrawal:**
-- Move money from your 🟡 Withdrawal Pot back into a specific trading bucket
-- Options: Move to 🟢 Dividend, 🔵 Growth, or 🔴 Penny
-- Or redistribute across all 3 buckets based on your allocation percentages
-- Once money moves to a trading bucket, the bot CAN use it to buy stocks
-
-**⚠️ Safety:** The Withdrawal Pot is always protected. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
 """)
 
     st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
@@ -1935,29 +1981,141 @@ with tab3:
 
     # --- TRADING SETTINGS ---
     st.markdown("---")
-    st.markdown("##### ⚙️ Trading Settings")
-
-    if st.button("🔒 Reset to Safe Defaults"):
+    st.markdown("##### ⚙️ Trading Settings (Risk Management)")
+    
+    if st.button("🔒 Reset to Safe Defaults", type="primary"):
         engine.reset_settings()
-        st.success("Settings reset!")
+        st.success("Settings reset to safe defaults!")
         st.rerun()
 
-    # === GLOBAL SETTINGS (always visible) ===
-    st.markdown("**🌐 Global Settings**")
-    col_g1, col_g2, col_g3, col_g4 = st.columns(4)
-    with col_g1:
-        # Enforce tier limit for max positions
-        tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES["starter"]
-        max_pos_limit = tier_limits.get("max_positions", 10)
-        engine.settings["max_positions"] = st.slider("Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Your tier allows up to {max_pos_limit}")
-    with col_g2:
-        daily_loss = st.slider("Daily Loss Limit %", 1, 10, int(engine.settings["daily_loss_limit_pct"] * 100), step=1, format="%d%%", help="Stop trading if daily losses exceed this %")
-        engine.settings["daily_loss_limit_pct"] = daily_loss / 100
-    with col_g3:
-        engine.settings["max_same_sector"] = st.slider("Max Same Sector", 1, 5, engine.settings.get("max_same_sector", 3), help="Max stocks in one industry sector")
-    with col_g4:
-        scan_interval = st.slider("Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans")
-        engine.settings["scan_interval_min"] = scan_interval
+        # === GLOBAL SETTINGS (always visible) ===
+        st.markdown("**🌐 Global Settings**")
+        st.caption("🟢 = Safe | 🟡 = Moderate | 🔴 = Risky. Hover over sliders for explanations.")
+
+        # --- TIER LOCK LOGIC ---
+        is_locked = user_tier == "starter"
+        if is_locked:
+            st.warning("🔒 **Starter Plan:** Risk settings are locked to safe defaults. Upgrade to Pro to unlock advanced risk controls.")
+        
+        col_g1, col_g2 = st.columns(2)
+
+        with col_g1:
+            # MAX POSITIONS (with Tier Limits preserved)
+            tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+            max_pos_limit = tier_limits.get("max_positions", 10)
+            max_pos = st.slider(
+                "📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], 
+                help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.",
+                disabled=is_locked
+            )
+            engine.settings["max_positions"] = max_pos
+            if max_pos > 20:
+                st.error("🔴 **Risk:** More than 20 positions increases exposure & margin risk significantly.")
+            elif max_pos > 10:
+                st.warning("🟡 **Moderate:** Holding 11-20 positions requires more capital.")
+            else:
+                st.success("🟢 **Safe:** Holding 10 or fewer positions.")
+
+            # MAX POSITION %
+            max_pos_pct = st.slider(
+                "💰 Max Position %", 2, 25, int(engine.settings["max_position_pct"] * 100), step=1, format="%d%%",
+                help="Max % of your total portfolio value put into a single stock. 8% is safe.",
+                disabled=is_locked
+            )
+            engine.settings["max_position_pct"] = max_pos_pct / 100
+            if max_pos_pct > 15:
+                st.error("🔴 **Risk:** Concentrated positions (>15%) can cause large losses if the stock drops.")
+            elif max_pos_pct > 8:
+                st.warning("🟡 **Moderate:** Positions 9-15% are concentrated. One bad trade hurts more.")
+            else:
+                st.success("🟢 **Safe:** Positions 8% or less protect your capital.")
+
+            # DAILY LOSS LIMIT %
+            daily_loss = st.slider(
+                "🛑 Daily Loss Limit %", 1, 10, int(engine.settings["daily_loss_limit_pct"] * 100), step=1, format="%d%%",
+                help="Stops trading for the day if your daily losses exceed this %. 3% is recommended.",
+                disabled=is_locked
+            )
+            engine.settings["daily_loss_limit_pct"] = daily_loss / 100
+            if daily_loss > 5:
+                st.error("🔴 **Risk:** Higher loss limits (>5%) risk larger drawdowns and can wipe out weeks of gains.")
+            elif daily_loss > 3:
+                st.warning("🟡 **Moderate:** A 4-5% daily loss is tough to recover from.")
+            else:
+                st.success("🟢 **Safe:** A 3% daily loss limit protects your capital.")
+
+        with col_g2:
+            # STOP LOSS %
+            stop_loss = st.slider(
+                "🛡️ Stop Loss %", 1, 20, int(engine.settings["stop_loss_pct"] * 100), step=1, format="%d%%",
+                help="Auto-sells a stock if it drops this %. Tight stops (<3%) get triggered by normal volatility.",
+                disabled=is_locked
+            )
+            engine.settings["stop_loss_pct"] = stop_loss / 100
+            if stop_loss < 3:
+                st.error("🔴 **Risk:** Tight stops (<3%) get triggered by normal market volatility, causing frequent stop-outs.")
+            elif stop_loss < 5:
+                st.warning("🟡 **Moderate:** 3-4% stops are tight. You may get sold out on normal dips.")
+            else:
+                st.success("🟢 **Safe:** 5%+ stops give stocks room to breathe.")
+
+            # TAKE PROFIT %
+            take_profit = st.slider(
+                "🎯 Take Profit %", 5, 50, int(engine.settings["take_profit_pct"] * 100), step=1, format="%d%%",
+                help="Auto-sells a stock when it reaches this % profit. Higher targets may never be reached.",
+                disabled=is_locked
+            )
+            engine.settings["take_profit_pct"] = take_profit / 100
+            if take_profit > 20:
+                st.error("🔴 **Risk:** Very high targets (>20%) may never be reached, causing you to hold losers longer.")
+            elif take_profit > 10:
+                st.warning("🟡 **Moderate:** 11-20% targets take longer to hit. Greed can be risky.")
+            else:
+                st.success("🟢 **Safe:** 10% targets lock in profits reliably.")
+
+            # MIN CONFIDENCE
+            min_conf = st.slider(
+                "🎯 Min Confidence", 0.05, 0.95, engine.settings["min_confidence"], step=0.05, format="%.2f",
+                help="Minimum signal confidence required to buy. Lower % = more trades, but more false signals.",
+                disabled=is_locked
+            )
+            engine.settings["min_confidence"] = min_conf
+            if min_conf < 0.15:
+                st.error("🔴 **Risk:** Lower than 15% confidence means buying on very weak signals (essentially guessing).")
+            elif min_conf < 0.25:
+                st.warning("🟡 **Moderate:** 15-24% confidence accepts weaker signals. More trades, less accuracy.")
+            else:
+                st.success("🟢 **Safe:** 25%+ ensures only decent signals trigger buys.")
+
+        # Row for remaining global settings
+        st.markdown("---")
+        col_r1, col_r2, col_r3 = st.columns(3)
+        with col_r1:
+            engine.settings["max_same_sector"] = st.slider(
+                "🏢 Max Same Sector", 1, 5, engine.settings.get("max_same_sector", 3), 
+                help="Limits how many stocks from the same industry you can hold.",
+                disabled=is_locked
+            )
+        with col_r2:
+            min_rvol = st.slider(
+                "💥 Min RVOL", 0.0, 5.0, engine.settings.get("min_rvol", 1.5), step=0.1, format="%.1f",
+                help="Minimum volume spike required for a buy signal. Lower = more trades, but less reliable.",
+                disabled=is_locked
+            )
+            engine.settings["min_rvol"] = min_rvol
+            if min_rvol < 1.0:
+                st.error("🔴 Low volume signals are unreliable.")
+            elif min_rvol < 1.5:
+                st.warning("🟡 Moderate volume backing.")
+            else:
+                st.success("🟢 Strong volume backing.")
+        with col_r3:
+            scan_interval = st.slider(
+                "⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], 
+                help="Minutes between scans. Lower = faster but uses more API calls.",
+                disabled=is_locked
+            )
+            engine.settings["scan_interval_min"] = scan_interval
 
     st.markdown("---")
 
