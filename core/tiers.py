@@ -1,6 +1,6 @@
 """
 core/tiers.py
-QuantPro Terminal — Tier Feature Definitions & Access Control
+CascadeTrade Terminal — Tier Feature Definitions & Access Control
 
 Defines what each tier can access and provides helper functions
 to check feature availability for any user.
@@ -27,12 +27,13 @@ TIER_FEATURES = {
         "discord_alerts": True,
         "dividend_calendar": True,
         "trade_journal": True,
+        "ipo_scanner": False,
         "max_positions": 10,
         "scan_interval_min": 5,
         "max_watchlist": 50,
     },
     "pro": {
-        "name": "Pro",
+        "name": "CascadeTrade Pro",
         "price": "$29/month",
         "paper_trading": True,
         "basic_signals": True,
@@ -47,12 +48,13 @@ TIER_FEATURES = {
         "discord_alerts": True,
         "dividend_calendar": True,
         "trade_journal": True,
+        "ipo_scanner": True,
         "max_positions": 20,
         "scan_interval_min": 1,
         "max_watchlist": 200,
     },
     "fund": {
-        "name": "Fund",
+        "name": "CascadeTrade Fund",
         "price": "$99/month",
         "paper_trading": True,
         "basic_signals": True,
@@ -67,6 +69,7 @@ TIER_FEATURES = {
         "discord_alerts": True,
         "dividend_calendar": True,
         "trade_journal": True,
+        "ipo_scanner": True,
         "max_positions": 50,
         "scan_interval_min": 1,
         "max_watchlist": 500,
@@ -76,7 +79,7 @@ TIER_FEATURES = {
         "priority_support": True,
     },
     "admin": {
-        "name": "Admin",
+        "name": "CascadeTrade Admin",
         "price": "Internal",
         "paper_trading": True,
         "basic_signals": True,
@@ -91,6 +94,7 @@ TIER_FEATURES = {
         "discord_alerts": True,
         "dividend_calendar": True,
         "trade_journal": True,
+        "ipo_scanner": True,
         "max_positions": 999,
         "scan_interval_min": 1,
         "max_watchlist": 999,
@@ -115,17 +119,17 @@ TIER_DISPLAY = {
     },
     "pro": {
         "icon": "⚡",
-        "label": "Pro",
+        "label": "CascadeTrade Pro",
         "color": "#00d4aa",
     },
     "fund": {
         "icon": "💎",
-        "label": "Fund",
+        "label": "CascadeTrade Fund",
         "color": "#ffd700",
     },
     "admin": {
         "icon": "🔧",
-        "label": "Admin",
+        "label": "CascadeTrade Admin",
         "color": "#ff6b6b",
     },
 }
@@ -136,14 +140,20 @@ TIER_DISPLAY = {
 # ============================================================
 
 def get_user_tier(username: str) -> str:
-    """Get the tier for a user. Returns 'starter' if not set or error."""
+    """Get the effective tier for a user.
+
+    Delegates to database.get_user_tier() which checks both the
+    legacy tier column and Stripe subscription status/expiry.
+    Returns 'starter' on any error or if not set.
+    """
     try:
-        from core.database import SessionLocal, User
+        from core.database import SessionLocal, get_user_tier as db_get_user_tier
         db = SessionLocal()
-        user = db.query(User).filter(User.username == username).first()
-        db.close()
-        if user and hasattr(user, 'tier') and user.tier:
-            return user.tier
+        try:
+            tier = db_get_user_tier(db, username)
+            return tier
+        finally:
+            db.close()
     except Exception:
         pass
     return "starter"
@@ -169,19 +179,21 @@ def get_tier_display(username: str) -> dict:
 
 
 def set_user_tier(username: str, tier: str) -> bool:
-    """Set a user's tier. Used by admin panel or payment webhook."""
+    """Set a user's tier. Used by admin panel or payment webhook.
+
+    Delegates to database.set_user_tier() which also handles
+    subscription field syncing when appropriate.
+    """
     if tier not in TIER_FEATURES:
         return False
     try:
-        from core.database import SessionLocal, User
+        from core.database import SessionLocal, set_user_tier as db_set_user_tier
         db = SessionLocal()
-        user = db.query(User).filter(User.username == username).first()
-        if user:
-            user.tier = tier
-            db.commit()
+        try:
+            result = db_set_user_tier(db, username, tier)
+            return result
+        finally:
             db.close()
-            return True
-        db.close()
     except Exception:
         pass
     return False
@@ -190,19 +202,12 @@ def set_user_tier(username: str, tier: str) -> bool:
 def get_all_users():
     """Get all users with their tier info. Admin only."""
     try:
-        from core.database import SessionLocal, User
+        from core.database import SessionLocal, get_all_users_with_tiers
         db = SessionLocal()
-        users = db.query(User).all()
-        result = []
-        for u in users:
-            result.append({
-                "username": u.username,
-                "tier": getattr(u, 'tier', 'starter') or 'starter',
-                "created_at": str(getattr(u, 'created_at', 'N/A')),
-                "last_login": str(getattr(u, 'last_login', 'N/A')),
-            })
-        db.close()
-        return result
+        try:
+            return get_all_users_with_tiers(db)
+        finally:
+            db.close()
     except Exception:
         return []
 
@@ -217,6 +222,7 @@ def get_upgrade_message(feature: str) -> str:
         "drip_calculator": "🔄 DRIP Calculator",
         "diamond_metrics": "💎 Diamond Metrics (Sortino, Calmar, Omega)",
         "auto_profit_extraction": "⚡ Auto Profit Extraction",
+        "ipo_scanner": "🔍 IPO & New Listings Scanner",
         "multiple_accounts": "👥 Multiple Accounts",
         "auto_rebalancing": "⚖️ Auto-Rebalancing",
         "weekly_reports": "📊 Weekly Reports",
