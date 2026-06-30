@@ -17,7 +17,7 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 KNOWN_SYMBOLS_FILE = DATA_DIR / "known_symbols.json"
 
-FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "d91o19hr01qnefog0hd0d91o19hr01qnefog0hdg")
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 
 # ==========================================
 # SYMBOL SNAPSHOT MANAGEMENT
