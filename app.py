@@ -607,7 +607,13 @@ with st.sidebar:
             st.caption("🧠 Used for AI news sentiment analysis only. $5 credit lasts months.")
 
         st.markdown("---")
+        st.markdown("##### 🔔 IPO & New Listings")
+        new_finnhub = st.text_input("Finnhub API Key", value=os.environ.get("FINNHUB_API_KEY", ""), type="password", key="finnhub_input")
+        st.caption("🔔 Free key from finnhub.io. Required for IPO calendar alerts.")
+
+        st.markdown("---")
         st.markdown("##### 🔒 Privacy Mode")
+
         privacy_mode = st.checkbox(
             "Privacy Mode (Discord shows % only, no $)",
             value=st.session_state.trading_engine.settings.get("discord_privacy_mode", True),
@@ -654,11 +660,13 @@ with st.sidebar:
                 user_to_update.discord_webhook_url = new_webhook
                 user_to_update.discord_webhook_url_daily = new_webhook_daily
                 user_to_update.openai_api_key = new_openai
-                # Save profit skim to database
                 user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
+                
+                # Save Finnhub key to environment for current session
+                if new_finnhub:
+                    os.environ["FINNHUB_API_KEY"] = new_finnhub
+                    
                 db.commit()
-
-                st.session_state.trading_engine.settings["discord_webhook_url"] = new_webhook
                 st.success("All settings saved securely!")
             else:
                 st.error("User not found.")
@@ -692,8 +700,8 @@ st.header("📊 QuantPro Terminal")
 st.markdown(f"### Welcome back, **{st.session_state.username}**.")
 
 # TABS - Now 6 tabs (Scanner + Deep AI merged)
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-    ["📚 Academy", "🔬 Scanner & Analysis", "💰 Auto Trade", "📊 Portfolio", "🔬 Backtest", "💎 Dividends"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    ["📚 Academy", "🔬 Scanner & Analysis", "💰 Auto Trade", "📊 Portfolio", "🔬 Backtest", "💎 Dividends", "🔔 New Listings"])
 
 # ==========================================
 # TAB 1: ACADEMY (Education Content)
@@ -3150,5 +3158,111 @@ with tab6:
                 st.plotly_chart(fig_growth, use_container_width=True)
         else:
             st.info(f"No dividend growth data available for {growth_symbol}.")
+
+    st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+
+# ==========================================
+# TAB 7: NEW LISTINGS & IPOs
+# ==========================================
+with tab7:
+    st.markdown("### 🔔 New Listings & IPO Scanner")
+    st.caption("Detect newly tradable stocks on Alpaca and view upcoming IPOs.")
+
+    col_scan1, col_scan2 = st.columns(2)
+
+    with col_scan1:
+        if st.button("🔍 Scan for New Alpaca Listings", use_container_width=True, type="primary"):
+            if not engine.connected:
+                st.error("Connect to Alpaca in the Auto Trade tab first!")
+            else:
+                with st.spinner("Comparing current Alpaca assets against known symbols..."):
+                    ipo_results = engine.scan_new_listings()
+                    
+                    new_symbols = ipo_results.get("new_symbols", [])
+                    if new_symbols:
+                        st.success(f"Found {len(new_symbols)} newly tradable stocks!")
+                        # Update known symbols snapshot so we don't keep reporting them
+                        engine.known_symbols = ipo_scanner.load_known_symbols() if IPO_SCANNER_AVAILABLE else []
+                    else:
+                        st.info("No new listings detected since last scan.")
+
+    with col_scan2:
+        if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
+            finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
+            if not finnhub_key:
+                st.warning("Please enter your Finnhub API Key in the Settings sidebar.")
+            else:
+                with st.spinner("Fetching IPO calendar from Finnhub..."):
+                    upcoming = ipo_scanner.get_upcoming_ipos(days_ahead=14)
+                    if upcoming:
+                        st.success(f"Found {len(upcoming)} upcoming IPOs in the next 14 days.")
+                    else:
+                        st.info("No upcoming IPOs found in the next 14 days, or Finnhub key is invalid.")
+
+    # --- DISPLAY NEWLY TRADABLE STOCKS ---
+    st.markdown("---")
+    st.markdown("##### 🆕 Newly Tradable Stocks on Alpaca")
+    st.caption("Stocks that have been added to Alpaca since your last snapshot.")
+
+    if st.button("🔄 Refresh Snapshot Baseline", help="Click this once to save the current list of tradable stocks. Future scans will compare against this baseline."):
+        if engine.connected and IPO_SCANNER_AVAILABLE:
+            ipo_scanner.save_symbol_snapshot(engine.api)
+            engine.known_symbols = ipo_scanner.load_known_symbols()
+            st.success("Baseline snapshot saved! Future scans will detect new stocks added after this point.")
+        else:
+            st.warning("Connect to Alpaca first.")
+
+    # Load current new symbols from engine state
+    new_symbols = getattr(engine, 'known_symbols', []) # Temporary display
+    
+    # We need to store the results of a scan in session state to persist the buttons
+    if "new_symbols_found" not in st.session_state:
+        st.session_state.new_symbols_found = []
+    if "upcoming_ipos_found" not in st.session_state:
+        st.session_state.upcoming_ipos_found = []
+
+    # Update session state if we just ran a scan
+    if ipo_results and ipo_results.get("new_symbols"):
+        st.session_state.new_symbols_found = ipo_results["new_symbols"]
+    if upcoming:
+        st.session_state.upcoming_ipos_found = upcoming
+
+    if st.session_state.new_symbols_found:
+        for symbol in st.session_state.new_symbols_found:
+            col_sym1, col_sym2 = st.columns([3, 1])
+            with col_sym1:
+                st.write(f"**{symbol}** — Newly Tradable")
+            with col_sym2:
+                watchlist = engine.settings.get("watchlist", [])
+                if symbol in watchlist:
+                    st.success("✅ In Watchlist")
+                else:
+                    if st.button(f"➕ Add", key=f"add_{symbol}"):
+                        watchlist.append(symbol)
+                        engine.settings["watchlist"] = watchlist
+                        engine.save_settings()
+                        st.success(f"Added {symbol} to watchlist!")
+                        st.rerun()
+    else:
+        st.info("No new listings detected. Click 'Scan for New Alpaca Listings' above to check.")
+
+    # --- DISPLAY UPCOMING IPOs ---
+    st.markdown("---")
+    st.markdown("##### 📅 Upcoming IPOs (Next 14 Days)")
+    st.caption("Companies expected to go public soon.")
+
+    if st.session_state.upcoming_ipos_found:
+        ipo_data = []
+        for ipo in st.session_state.upcoming_ipos_found:
+            ipo_data.append({
+                "Symbol": ipo.get("symbol", "N/A"),
+                "Company": ipo.get("name", "Unknown"),
+                "Date": ipo.get("date", "N/A"),
+                "Exchange": ipo.get("exchange", "N/A"),
+                "Price Range": ipo.get("price_range", "N/A"),
+            })
+        st.dataframe(ipo_data, use_container_width=True, hide_index=True)
+    else:
+        st.info("No IPO data loaded. Click 'Check Upcoming IPOs' above to fetch from Finnhub.")
 
     st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
