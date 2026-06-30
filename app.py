@@ -1667,88 +1667,102 @@ with tab3:
 
     # --- SUB-TAB 1: CONTROL ---
     with auto_sub1:
-        # --- Connection & Bot Control ---
-        col_conn, col_ctrl = st.columns(2, gap="medium")
+
+        # --- ACCOUNT METRICS (Full width so numbers are readable) ---
+        st.markdown("##### 🔌 Connection & Account")
         
-        with col_conn:
-            with st.container(border=True):
-                st.markdown("##### 🔌 Connection")
-                if not engine.connected:
-                    st.warning("Not connected to Alpaca. Enter keys in sidebar and click Connect.")
+        if not engine.connected:
+            st.warning("Not connected to Alpaca. Enter your API keys in the sidebar Settings and click Connect.")
+            account = {"error": "not_connected"}
+        else:
+            account = engine.get_account_info()
+            if "error" not in account:
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("💼 Portfolio Value", f"${account['portfolio_value']:,.2f}")
+                m2.metric("💵 Cash", f"${account['cash']:,.2f}")
+                m3.metric("💪 Buying Power", f"${account['buying_power']:,.2f}")
+                m4.metric("📊 Equity", f"${account['equity']:,.2f}")
+            else:
+                st.error(f"Account error: {account['error']}")
+
+        # --- CONNECT / RECONNECT + BOT CONTROL (Side by side, compact) ---
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        
+        with col_btn1:
+            if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
+                db = SessionLocal()
+                current_user = db.query(User).filter(User.username == st.session_state.username).first()
+                api_key = current_user.alpaca_api_key if current_user else ""
+                secret_key = current_user.alpaca_secret_key if current_user else ""
+                db.close()
+                if not api_key or not secret_key:
+                    st.error("Please enter your Alpaca API keys in the Settings sidebar.")
                 else:
-                    account = engine.get_account_info()
-                    if "error" not in account:
-                        mc1, mc2, mc3, mc4 = st.columns(4)
-                        mc1.metric("Portfolio", f"${account['portfolio_value']:,.2f}")
-                        mc2.metric("Cash", f"${account['cash']:,.2f}")
-                        mc3.metric("Buying Power", f"${account['buying_power']:,.2f}")
-                        mc4.metric("Equity", f"${account['equity']:,.2f}")
-                    else:
-                        st.error(f"Account error: {account['error']}")
+                    with st.spinner("Connecting to Alpaca..."):
+                        try:
+                            import alpaca_trade_api as tradeapi
+                            alpaca_api = tradeapi.REST(api_key, secret_key, base_url='https://paper-api.alpaca.markets', api_version='v2')
+                            success = engine.connect(alpaca_api)
+                            if success: st.success("Connected to Alpaca Paper Trading!")
+                            else: st.error(f"Connection failed: {engine.status_message}")
+                        except Exception as e: st.error(f"Error initializing Alpaca: {e}")
+                    st.rerun()
 
-                if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-                    db = SessionLocal()
-                    current_user = db.query(User).filter(User.username == st.session_state.username).first()
-                    api_key = current_user.alpaca_api_key if current_user else ""
-                    secret_key = current_user.alpaca_secret_key if current_user else ""
-                    db.close()
-                    if not api_key or not secret_key:
-                        st.error("Please enter your Alpaca API keys in the Settings sidebar.")
-                    else:
-                        with st.spinner("Connecting to Alpaca..."):
-                            try:
-                                import alpaca_trade_api as tradeapi
-                                alpaca_api = tradeapi.REST(api_key, secret_key, base_url='https://paper-api.alpaca.markets', api_version='v2')
-                                success = engine.connect(alpaca_api)
-                                if success: st.success("Connected to Alpaca Paper Trading!")
-                                else: st.error(f"Connection failed: {engine.status_message}")
-                            except Exception as e: st.error(f"Error initializing Alpaca: {e}")
-                        st.rerun()
-
-        with col_ctrl:
-            with st.container(border=True):
-                st.markdown("##### 🎮 Bot Control")
-                if engine.running:
-                    if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
-                        engine.stop()
-                        st.success("Bot stopped.")
+        with col_btn2:
+            if engine.running:
+                if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
+                    engine.stop()
+                    st.success("Bot stopped.")
+                    st.rerun()
+            else:
+                if st.session_state.confirm_start_bot:
+                    if st.button("✅ Confirm Start", type="primary", use_container_width=True):
+                        st.session_state.confirm_start_bot = False
+                        engine.start()
+                        market = engine.is_market_open()
+                        if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
+                        else: st.success("Bot started!")
                         st.rerun()
                 else:
-                    if st.session_state.confirm_start_bot:
-                        st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
-                                st.session_state.confirm_start_bot = False
-                                engine.start()
-                                market = engine.is_market_open()
-                                if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
-                                else: st.success("Bot started!")
-                                st.rerun()
-                        with c2:
-                            if st.button("❌ Cancel", use_container_width=True):
-                                st.session_state.confirm_start_bot = False
-                                st.rerun()
-                    else:
-                        if st.button("▶️ Start Bot", type="primary", use_container_width=True):
-                            if not engine.connected: st.error("Connect to Alpaca first!")
-                            else:
-                                st.session_state.confirm_start_bot = True
-                                st.rerun()
+                    if st.button("▶️ Start Bot", use_container_width=True):
+                        if not engine.connected: st.error("Connect to Alpaca first!")
+                        else:
+                            st.session_state.confirm_start_bot = True
+                            st.rerun()
 
-                if st.button("🔍 Scan Once", use_container_width=True):
-                    if not engine.connected: st.error("Connect to Alpaca first!")
-                    else:
-                        with st.spinner("Scanning for signals..."):
-                            signals = engine.scan_signals()
-                            if signals:
-                                buy_count = sum(1 for s in signals if s["signal"] == "BUY")
-                                sell_count = sum(1 for s in signals if s["signal"] == "SELL")
-                                st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells")
-                            else: st.info("No signals found this scan.")
+        with col_btn3:
+            if st.button("🔍 Scan Once", use_container_width=True):
+                if not engine.connected: st.error("Connect to Alpaca first!")
+                else:
+                    with st.spinner("Scanning for signals..."):
+                        signals = engine.scan_signals()
+                        if signals:
+                            buy_count = sum(1 for s in signals if s["signal"] == "BUY")
+                            sell_count = sum(1 for s in signals if s["signal"] == "SELL")
+                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells")
+                        else: st.info("No signals found this scan.")
+
+        # --- Confirm Start Bot Warning (if needed, full width) ---
+        if st.session_state.confirm_start_bot:
+            st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
+            confirm_c1, confirm_c2 = st.columns(2)
+            with confirm_c1:
+                if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
+                    st.session_state.confirm_start_bot = False
+                    engine.start()
+                    market = engine.is_market_open()
+                    if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
+                    else: st.success("Bot started!")
+                    st.rerun()
+            with confirm_c2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.confirm_start_bot = False
+                    st.rerun()
 
         status = engine.get_status()
-        st.caption(f"Status: {status['status_message']} | Cycles: {status['cycle_count']} | P&L: ${status['daily_pnl']:+,.2f}")
+        conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
+        bot_icon = "🟢 Running" if engine.running else "⚪ Stopped"
+        st.caption(f"{conn_icon} | {bot_icon} | Cycles: {status['cycle_count']} | P&L: ${status['daily_pnl']:+,.2f}")
 
         # --- Bucket Overview ---
         st.markdown("##### 💰 Bucket Overview")
