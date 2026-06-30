@@ -208,14 +208,14 @@ ensure_db_columns()
 # CSV WATERMARK HELPER
 # ==========================================
 def watermark_csv(csv_string: str) -> str:
-    watermark = "\nSource: QuantPro Terminal - Unauthorized reproduction prohibited"
+    watermark = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
     return csv_string + watermark
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
 # ==========================================
-st.set_page_config(page_title="QuantPro Terminal", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
+st.set_page_config(page_title="CascadeTrade Terminal", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 hide_st_style = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -262,7 +262,7 @@ if "upcoming_ipos_found" not in st.session_state:
 if not st.session_state.authenticated:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 QuantPro Terminal</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade Terminal</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; color: #a0a0a0;'>Institutional-Grade Trading Engine</h3>", unsafe_allow_html=True)
         st.markdown("---")
 
@@ -354,7 +354,7 @@ if not st.session_state.authenticated:
 # 3b. FIRST-TIME ONBOARDING
 # ==========================================
 if st.session_state.needs_onboarding:
-    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>🚀 Welcome to QuantPro Terminal</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>🚀 Welcome to CascadeTrade Terminal</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center; color: #a0a0a0;'>Let's get you set up in a few quick steps.</h3>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -413,7 +413,7 @@ if st.session_state.needs_onboarding:
 **How to set up a Discord webhook:**
 1. Open [Discord](https://discord.com) and go to your server
 2. Go to **Server Settings → Integrations → Webhooks**
-3. Click **Create Webhook** and give it a name (e.g., "QuantPro Alerts")
+3. Click **Create Webhook** and give it a name (e.g., "CascadeTrade Alerts")
 4. Copy the **Webhook URL**
 5. Paste it into the Settings panel in the sidebar
 
@@ -433,7 +433,7 @@ if st.session_state.needs_onboarding:
     elif step == 4:
         st.markdown("### Step 4 of 4: 🎉 You're Ready!")
         st.markdown("""
-🎊 **Congratulations!** You're all set to start using QuantPro Terminal.
+🎊 **Congratulations!** You're all set to start using CascadeTrade Terminal.
 
 **Quick start guide:**
 1. 📌 Enter your Alpaca API keys in the **Settings** panel (left sidebar)
@@ -473,7 +473,7 @@ if TIERS_AVAILABLE:
     tier_display = get_tier_display(st.session_state.username)
 
 with st.sidebar:
-    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 QuantPro</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
     tier_icon = tier_display.get("icon", "🆓")
@@ -529,7 +529,7 @@ with st.sidebar:
 </small>
 """, unsafe_allow_html=True)
             if current_plan != "pro":
-                pro_link = get_payment_link("pro") if PAYMENTS_AVAILABLE else "#"
+                pro_link = get_payment_link("pro", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
                 if pro_link and "your_pro_link" not in pro_link:
                     st.link_button("⚡ Upgrade to Pro", pro_link, use_container_width=True)
                 else:
@@ -550,7 +550,7 @@ with st.sidebar:
 </small>
 """, unsafe_allow_html=True)
             if current_plan != "fund":
-                fund_link = get_payment_link("fund") if PAYMENTS_AVAILABLE else "#"
+                fund_link = get_payment_link("fund", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
                 if fund_link and "your_fund_link" not in fund_link:
                     st.link_button("💎 Upgrade to Fund", fund_link, use_container_width=True)
                 else:
@@ -738,6 +738,13 @@ with st.sidebar:
                     user_to_update.finnhub_api_key = new_finnhub
                 if new_finnhub:
                     os.environ["FINNHUB_API_KEY"] = new_finnhub
+                    # Also update the module-level variable in ipo_scanner
+                    if IPO_SCANNER_AVAILABLE:
+                        try:
+                            from core import ipo_scanner
+                            ipo_scanner.FINNHUB_API_KEY = new_finnhub
+                        except Exception:
+                            pass
                 db.commit()
                 st.success("All settings saved securely!")
             else:
@@ -753,7 +760,7 @@ with st.sidebar:
                     with st.spinner("Sending..."):
                         try:
                             from core.alerts import send_discord_alert
-                            success = send_discord_alert(new_webhook, "🟢 **QuantPro Terminal is Online!**")
+                            success = send_discord_alert(new_webhook, "🟢 **CascadeTrade Terminal is Online!**")
                             if success: st.success("Check Discord!")
                             else: st.error("Failed. Check URL.")
                         except Exception as e:
@@ -1097,11 +1104,11 @@ with tab1:
             for t in engine.trade_log:
                 bucket = t.get("bucket", "")
                 if bucket == "long_term": bucket = "dividend"
-                trade_data_exp.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", "")[:50], "Source": "QuantPro Terminal"})
+                trade_data_exp.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", "")[:50], "Source": "CascadeTrade Terminal"})
             if trade_data_exp:
                 csv_string = pd.DataFrame(trade_data_exp).to_csv(index=False)
                 csv_string = watermark_csv(csv_string)
-                st.download_button(label="📥 Download FULL Trade Log", data=csv_string.encode('utf-8'), file_name=f'quantpro_full_trades_{today_str}.csv', mime='text/csv', use_container_width=True)
+                st.download_button(label="📥 Download FULL Trade Log", data=csv_string.encode('utf-8'), file_name=f'cascade_trade_full_trades_{today_str}.csv', mime='text/csv', use_container_width=True)
 
         export_col1, export_col2 = st.columns(2)
         with export_col1:
@@ -1153,11 +1160,11 @@ with tab1:
                                 if trade_date == today_str:
                                     bucket = t.get("bucket", "")
                                     if bucket == "long_term": bucket = "dividend"
-                                    daily_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Source": "QuantPro Terminal"})
+                                    daily_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Source": "CascadeTrade Terminal"})
                             if daily_data:
                                 csv_text = pd.DataFrame(daily_data).to_csv(index=False)
                                 csv_text = watermark_csv(csv_text)
-                                filename = f"quantpro_daily_trades_{today_str}.csv"
+                                filename = f"cascadetrade_daily_trades_{today_str}.csv"
                                 upload_success = send_discord_file(webhook_url, csv_text.encode('utf-8'), filename, f"📄 **Daily Trade Activity** - {today_str}")
                                 if upload_success: st.success("Daily log file uploaded to Discord!")
                                 else: st.warning("File upload failed, posting as text instead...")
@@ -1166,39 +1173,39 @@ with tab1:
 
         st.markdown("---")
         st.markdown("##### 🔒 Private Export")
-        st.caption("All CSV exports are watermarked with 'Source: QuantPro Terminal' to protect your IP.")
+        st.caption("All CSV exports are watermarked with 'Source: CascadeTrade Terminal' to protect your IP.")
 
         if engine.trade_log:
             export_data = []
             for t in engine.trade_log:
                 bucket = t.get("bucket", "")
                 if bucket == "long_term": bucket = "dividend"
-                export_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", ""), "Sector": t.get("sector", ""), "Source": "QuantPro Terminal"})
+                export_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", ""), "Sector": t.get("sector", ""), "Source": "CascadeTrade Terminal"})
             csv_string = pd.DataFrame(export_data).to_csv(index=False)
             csv_string = watermark_csv(csv_string)
-            st.download_button(label="📥 Download Private Trade History (Watermarked)", data=csv_string.encode('utf-8'), file_name=f'quantpro_private_trades_{today_str}.csv', mime='text/csv', use_container_width=True)
+            st.download_button(label="📥 Download Private Trade History (Watermarked)", data=csv_string.encode('utf-8'), file_name=f'cascadetrade_private_trades_{today_str}.csv')
 
         div_history = engine.get_dividend_history()
         if div_history:
             div_export = []
             for d in div_history:
-                div_export.append({"Date": d.get("date", ""), "Symbol": d.get("symbol", ""), "Amount": d.get("amount", 0), "Bucket": d.get("bucket", ""), "Status": d.get("status", ""), "Source": "QuantPro Terminal"})
+                div_export.append({"Date": d.get("date", ""), "Symbol": d.get("symbol", ""), "Amount": d.get("amount", 0), "Bucket": d.get("bucket", ""), "Status": d.get("status", ""), "Source": "CascadeTrade Terminal"})
             div_csv = pd.DataFrame(div_export).to_csv(index=False)
             div_csv = watermark_csv(div_csv)
-            st.download_button(label="📥 Download Dividend History (Watermarked)", data=div_csv.encode('utf-8'), file_name=f'quantpro_dividends_{today_str}.csv', mime='text/csv', use_container_width=True)
+            st.download_button(label="📥 Download Dividend History (Watermarked)", data=div_csv.encode('utf-8'), file_name=f'cascadetrade_dividends_{today_str}.csv', mime='text/csv', use_container_width=True)
 
         bucket_export = [{
-            "Bucket": "Dividend", "Value": bucket_ov["dividend"]["value"], "Positions": bucket_ov["dividend"]["positions"], "Deposited": bucket_ov["dividend"]["total_deposited"], "Return": f"{((bucket_ov['dividend']['value'] - bucket_ov['dividend']['total_deposited']) / bucket_ov['dividend']['total_deposited'] * 100) if bucket_ov['dividend']['total_deposited'] > 0 else 0:.1f}%", "Dividends_Earned": bucket_ov["dividend"]["dividends_earned"], "Source": "QuantPro Terminal"
+            "Bucket": "Dividend", "Value": bucket_ov["dividend"]["value"], "Positions": bucket_ov["dividend"]["positions"], "Deposited": bucket_ov["dividend"]["total_deposited"], "Return": f"{((bucket_ov['dividend']['value'] - bucket_ov['dividend']['total_deposited']) / bucket_ov['dividend']['total_deposited'] * 100) if bucket_ov['dividend']['total_deposited'] > 0 else 0:.1f}%", "Dividends_Earned": bucket_ov["dividend"]["dividends_earned"], "Source": "CascadeTrade Terminal"
         }, {
-            "Bucket": "Growth", "Value": bucket_ov["growth"]["value"], "Positions": bucket_ov["growth"]["positions"], "Deposited": bucket_ov["growth"]["total_deposited"], "Return": f"{((bucket_ov['growth']['value'] - bucket_ov['growth']['total_deposited']) / bucket_ov['growth']['total_deposited'] * 100) if bucket_ov['growth']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_In": bucket_ov["growth"]["profits_moved_in"], "Source": "QuantPro Terminal"
+            "Bucket": "Growth", "Value": bucket_ov["growth"]["value"], "Positions": bucket_ov["growth"]["positions"], "Deposited": bucket_ov["growth"]["total_deposited"], "Return": f"{((bucket_ov['growth']['value'] - bucket_ov['growth']['total_deposited']) / bucket_ov['growth']['total_deposited'] * 100) if bucket_ov['growth']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_In": bucket_ov["growth"]["profits_moved_in"], "Source": "CascadeTrade Terminal"
         }, {
-            "Bucket": "Penny", "Value": bucket_ov["penny"]["value"], "Positions": bucket_ov["penny"]["positions"], "Deposited": bucket_ov["penny"]["total_deposited"], "Return": f"{((bucket_ov['penny']['value'] - bucket_ov['penny']['total_deposited']) / bucket_ov['penny']['total_deposited'] * 100) if bucket_ov['penny']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_Out": bucket_ov["penny"]["profits_to_growth"], "Source": "QuantPro Terminal"
+            "Bucket": "Penny", "Value": bucket_ov["penny"]["value"], "Positions": bucket_ov["penny"]["positions"], "Deposited": bucket_ov["penny"]["total_deposited"], "Return": f"{((bucket_ov['penny']['value'] - bucket_ov['penny']['total_deposited']) / bucket_ov['penny']['total_deposited'] * 100) if bucket_ov['penny']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_Out": bucket_ov["penny"]["profits_to_growth"], "Source": "CascadeTrade Terminal"
         }, {
-            "Bucket": "Withdrawal", "Available": bucket_ov["withdrawal"]["available"], "Dividends_Received": bucket_ov["withdrawal"]["dividends_received"], "Profits_Extracted": bucket_ov["withdrawal"]["profits_extracted"], "Source": "QuantPro Terminal"
+            "Bucket": "Withdrawal", "Available": bucket_ov["withdrawal"]["available"], "Dividends_Received": bucket_ov["withdrawal"]["dividends_received"], "Profits_Extracted": bucket_ov["withdrawal"]["profits_extracted"], "Source": "CascadeTrade Terminal"
         }]
         bucket_csv = pd.DataFrame(bucket_export).to_csv(index=False)
         bucket_csv = watermark_csv(bucket_csv)
-        st.download_button(label="📥 Download Bucket Summary (Watermarked)", data=bucket_csv.encode('utf-8'), file_name=f'quantpro_buckets_{today_str}.csv', mime='text/csv', use_container_width=True)
+        st.download_button(label="📥 Download Bucket Summary (Watermarked)", data=bucket_csv.encode('utf-8'), file_name=f'cascadetrade_buckets_{today_str}.csv', mime='text/csv', use_container_width=True)
 
 # ==========================================
 # TAB 2: 🔬 SCANNER (Sub-tabs Layout)
@@ -1550,13 +1557,24 @@ with tab2:
                             st.info("No new listings detected since last scan.")
 
         with col_scan2:
-            if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
-                finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
+           if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
+                # Try database first, then environment variable
+                finnhub_key = ""
+                try:
+                    db_finnhub = SessionLocal()
+                    finnhub_user = db_finnhub.query(User).filter(User.username == st.session_state.username).first()
+                    if finnhub_user and hasattr(finnhub_user, 'finnhub_api_key') and finnhub_user.finnhub_api_key:
+                        finnhub_key = finnhub_user.finnhub_api_key
+                    db_finnhub.close()
+                except Exception:
+                    pass
+                if not finnhub_key:
+                    finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
                 if not finnhub_key:
                     st.warning("Please enter your Finnhub API Key in the Settings sidebar.")
                 else:
                     with st.spinner("Fetching IPO calendar from Finnhub..."):
-                        upcoming = get_upcoming_ipos(days_ahead=14) if IPO_SCANNER_AVAILABLE else []
+                        upcoming = get_upcoming_ipos(days_ahead=14, finnhub_api_key=finnhub_key) if IPO_SCANNER_AVAILABLE else []
                         if upcoming:
                             st.session_state.upcoming_ipos_found = upcoming
                             st.success(f"Found {len(upcoming)} upcoming IPOs in the next 14 days.")
@@ -1708,7 +1726,7 @@ with tab2:
                                 st.download_button(
                                     label="📥 Download Backtest Results (Watermarked)",
                                     data=bt_csv.encode('utf-8'),
-                                    file_name=f'quantpro_backtest_{datetime.now().strftime("%Y-%m-%d")}.csv',
+                                    file_name=f'cascadetrade_backtest_{datetime.now().strftime("%Y-%m-%d")}.csv',
                                     mime='text/csv',
                                     use_container_width=True
                                 )
@@ -1718,7 +1736,7 @@ with tab2:
                         else:
                             st.warning(f"⚠️ Backtest status: {bt_result.get('status', 'Unknown')}")
 
-        st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+        st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
 
 # ==========================================
 # TAB 3: 🤖 AUTO TRADE (Sub-tabs Layout)
@@ -2121,7 +2139,7 @@ with tab3:
         else:
             st.info("No trades yet.")
 
-        st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+        st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
 
         with st.expander("🔍 Bucket Debug Tool", expanded=False):
             debug_symbol = st.text_input("Enter symbol to debug bucket classification", value="KO", key="debug_bucket_symbol")
@@ -2341,12 +2359,12 @@ with tab3:
 # ==========================================
 with tab4:
     st.markdown("### 📚 Academy: How It Works")
-    st.caption("Everything you need to know about QuantPro Terminal. Click any topic to expand it.")
+    st.caption("Everything you need to know about CascadeTrade Terminal. Click any topic to expand it.")
 
     with st.expander("🎓 1. Getting Started (Beginner)"):
         st.markdown("""
-**What is QuantPro Terminal?**
-QuantPro is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
+**What is CascadeTrade Terminal?**
+CascadeTrade is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
 
 **What are the 3 buckets?**
 Your money is split into three buckets based on risk:
@@ -2359,7 +2377,7 @@ Your money is split into three buckets based on risk:
 The bot uses technical indicators (RSI, MACD, Bollinger Bands, Volume) to find stocks that are oversold (cheap) or overbought (expensive). When a stock hits a buy signal, it checks your risk settings before buying.
 
 **What is paper trading vs real money?**
-QuantPro starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
+CascadeTrade starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
 
 **Glossary of terms:**
 - **RSI (Relative Strength Index):** Measures if a stock is overbought (too high) or oversold (too low).
@@ -2400,7 +2418,7 @@ A stock with 20% confidence means 4 out of 5 indicators are disagreeing. The bot
     with st.expander("🪣 3. The 3-Bucket System"):
         st.markdown("""
 **How your money is protected:**
-Instead of putting all your money in one place, QuantPro splits it into buckets:
+Instead of putting all your money in one place, CascadeTrade splits it into buckets:
 
 🟢 **Dividend Pot (Steady, Slow, Safe):**
 Buys stocks that pay you just for holding them. These are large, established companies (like Coca-Cola or Johnson & Johnson). They don't grow fast, but they pay you cash regularly.
@@ -2444,7 +2462,7 @@ The VIX is the "Fear Index". When VIX is above 28, the market is panicking. Duri
 **What is ATR position sizing?**
 Average True Range measures how much a stock typically moves in a day. A volatile stock might move $5 a day; a calm stock might move $0.50. ATR position sizing makes sure you buy fewer shares of volatile stocks and more shares of calm stocks, keeping your risk level consistent.
 
-**QuantPro uses multiple indicators together:**
+**CascadeTrade uses multiple indicators together:**
 
 | Indicator | What It Detects | Weight | Tier |
 |-----------|----------------|--------|------|
@@ -2507,7 +2525,7 @@ When profits accumulate in the Withdrawal Pot, actually withdraw them to your ba
 4. Click "Connect" in the Auto Trade tab.
 
 **Paper trading vs live trading?**
-Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. QuantPro starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
+Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. CascadeTrade starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
 
 **How do I withdraw profits?**
 The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this money out:
@@ -2515,13 +2533,13 @@ The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this m
 2. Transfer the funds from your Alpaca account to your linked bank account.
 
 **What happens if the bot crashes?**
-QuantPro runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
+CascadeTrade runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
 
 **How do I cancel my subscription?**
 Go to the Upgrade page in the sidebar and click "Manage Subscription" or contact support.
 
 **Is this financial advice?**
-No. QuantPro Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
+No. CascadeTrade Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
 """)
 
     with st.expander("⚡ Profit Extraction & Skimming"):
@@ -2573,7 +2591,7 @@ No. QuantPro Terminal is automated trading software. It does not provide persona
 
     with st.expander("💎 Dividends & DRIP"):
         st.markdown("""
-**How dividends work in QuantPro:**
+**How dividends work in CascadeTrade:**
 1. When a stock you hold pays a dividend, Alpaca credits it to your account
 2. Click "💎 Check Dividends" to scan for new dividend payments
 3. Dividend income flows into your **Withdrawal Pot** (locked from trading)
@@ -2692,4 +2710,4 @@ These metrics are available in the Portfolio tab when you have enough trade hist
 - You can manually scan once by clicking "Scan Once"
 """)
 
-    st.caption("QuantPro Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+    st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
