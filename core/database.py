@@ -55,6 +55,7 @@ class User(Base):
     penny_pct = Column(Float, default=0.30)
     min_dividend_yield = Column(Float, default=0.03)
     penny_price_threshold = Column(Float, default=5.0)
+    profit_skim_pct = Column(Float, default=1.0)
 
     # --- Security & Compliance ---
     terms_accepted = Column(Boolean, default=False)
@@ -132,6 +133,7 @@ def migrate_db():
             ('penny_pct', 'FLOAT'),
             ('min_dividend_yield', 'FLOAT'),
             ('penny_price_threshold', 'FLOAT'),
+            ('profit_skim_pct', 'FLOAT'),
             ('terms_accepted', 'BOOLEAN'),
             ('terms_accepted_date', 'DATETIME'),
             ('login_attempts', 'INTEGER'),
@@ -187,6 +189,7 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         penny_pct=0.30,
         min_dividend_yield=0.03,
         penny_price_threshold=5.0,
+        profit_skim_pct=1.0,
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
         tier="starter",
@@ -341,6 +344,7 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "penny_pct": user.penny_pct,
             "min_dividend_yield": user.min_dividend_yield,
             "penny_price_threshold": user.penny_price_threshold,
+            "profit_skim_pct": user.profit_skim_pct,
         },
         "integrations": {
             "alpaca_connected": bool(user.alpaca_api_key),
