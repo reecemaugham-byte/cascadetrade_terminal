@@ -14,8 +14,8 @@ from core.database import SessionLocal, User
 # You will create these in your Stripe Dashboard (Product -> Payment Link)
 # Paste the URLs here once created.
 STRIPE_PAYMENT_LINKS = {
-    "pro": os.environ.get("STRIPE_PRO_LINK", "https://buy.stripe.com/your_pro_link_here"),
-    "fund": os.environ.get("STRIPE_FUND_LINK", "https://buy.stripe.com/your_fund_link_here"),
+    "pro": "https://buy.stripe.com/test_6oU9AMd581WtfmAbepcbC00",
+    "fund": "https://buy.stripe.com/test_dRm6oA1mqbx3b6k96hcbC01",
 }
 
 
