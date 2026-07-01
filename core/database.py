@@ -8,22 +8,40 @@ import json
 
 # --- Database Setup ---
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+_db_fallback_to_sqlite = False
 
 if DATABASE_URL:
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-    engine = sqlalchemy.create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_recycle=300,
-    )
-else:
+    try:
+        engine = sqlalchemy.create_engine(
+            DATABASE_URL,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            connect_args={"connect_timeout": 10}
+        )
+        # Test the connection
+        with engine.connect() as test_conn:
+            test_conn.execute(sqlalchemy.text("SELECT 1"))
+        print(f"✅ Connected to database successfully")
+    except Exception as e:
+        print(f"⚠️ WARNING: Could not connect to database: {e}")
+        print(f"⚠️ Falling back to local SQLite database.")
+        DATABASE_URL = ""
+        _db_fallback_to_sqlite = True
+
+if not DATABASE_URL:
     DATABASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
     os.makedirs(DATABASE_DIR, exist_ok=True)
     sqlite_path = os.path.join(DATABASE_DIR, 'cascadetrade_users.db')
     DATABASE_URL = f"sqlite:///{sqlite_path}"
     engine = sqlalchemy.create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    if _db_fallback_to_sqlite:
+        print(f"✅ Using SQLite database: {sqlite_path}")
+    else:
+        print(f"✅ Using SQLite database: {sqlite_path}")
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -126,7 +144,11 @@ class Trade(Base):
 
 
 # Create all tables
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print(f"⚠️ WARNING: Could not create database tables: {e}")
+    print("⚠️ Tables will be created on first successful connection.")
 
 
 # ==========================================
