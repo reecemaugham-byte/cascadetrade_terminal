@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-# Your app's public URL — used for Stripe payment redirects
+# Your app's public URL — MUST match your actual DigitalOcean domain
 APP_URL = os.environ.get("APP_URL", "https://cascadetrade-terminal.onrender.com")
 
 # Static Payment Links — used as fallback if Checkout Session creation fails
@@ -295,14 +295,25 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
                 "plan": "",
             }
 
-        # Verify the client_reference_id matches the logged-in user
+        # Use client_reference_id from Stripe to identify the user
+        # This is more reliable than the Streamlit session username,
+        # because the session may be lost after a Stripe redirect.
         client_ref = session.get("client_reference_id", "")
-        if client_ref and client_ref != username:
-            logger.warning(
-                f"Payment verification mismatch: session client_ref='{client_ref}' "
-                f"but logged-in user='{username}'. Using session client_ref."
-            )
+        metadata = session.get("metadata", {}) or {}
+    
+        # Priority: client_reference_id > metadata.username > passed-in username
+        if client_ref:
             username = client_ref
+            logger.info(f"Using client_reference_id from Stripe: {username}")
+        elif metadata and metadata.get("username"):
+            username = metadata["username"]
+            logger.info(f"Using metadata username from Stripe: {username}")
+        elif not username:
+            return {
+                "success": False,
+                "message": "Could not identify your account. Please log in and try again, or contact support.",
+                "plan": "",
+            }
 
         # Determine the plan from metadata or amount
         metadata = session.get("metadata", {}) or {}
