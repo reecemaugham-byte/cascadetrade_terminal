@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-# Your app's public URL — MUST match your actual DigitalOcean domain
+# Your app's public URL — used for Stripe payment redirects
 APP_URL = os.environ.get("APP_URL", "https://cascadetrade-terminal.onrender.com")
 
 # Static Payment Links — used as fallback if Checkout Session creation fails
