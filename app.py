@@ -128,7 +128,7 @@ except Exception:
     pass
 
 try:
-    from core.payments import upgrade_user, downgrade_user, check_subscription, get_payment_link
+    from core.payments import upgrade_user, downgrade_user, check_subscription, get_payment_link, verify_and_process_payment
     PAYMENTS_AVAILABLE = True
 except ImportError:
     pass
