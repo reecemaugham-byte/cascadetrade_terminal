@@ -16,3 +16,5 @@ urllib3
 psycopg2-binary
 flask
 stripe
+xgboost
+lightgbm
