@@ -291,7 +291,19 @@ if not st.session_state.authenticated:
                             db_check.close()
                             if sub_status.get("status") == "expired":
                                 st.warning("Your Pro subscription has expired. You have been downgraded to Starter.")
-                        
+                            elif sub_status.get("status") == "active" and sub_status.get("end_date"):
+                                try:
+                                    end_date_str = sub_status["end_date"]
+                                    if end_date_str and end_date_str != "None":
+                                        end_date_check = datetime.strptime(end_date_str[:19], "%Y-%m-%d %H:%M:%S")
+                                        if end_date_check < datetime.utcnow():
+                                            db_check2 = SessionLocal()
+                                            downgrade_user(db_check2, _username)
+                                            db_check2.close()
+                                            st.warning("Your Pro subscription has expired. You've been moved to Starter.")
+                                except Exception:
+                                    pass
+                       
                         if not _terms_accepted:
                             st.session_state.needs_onboarding = True
                             st.session_state.onboarding_step = 1
@@ -463,6 +475,34 @@ if st.session_state.needs_onboarding:
             st.rerun()
 
     st.stop()
+    
+    # ==========================================
+# PAYMENT REDIRECT HANDLER
+# ==========================================
+if st.session_state.get("authenticated") and not st.session_state.get("payment_checked", False):
+    query_params = st.query_params
+    if "session_id" in query_params:
+        session_id = query_params["session_id"]
+        st.session_state.payment_checked = True
+
+        if PAYMENTS_AVAILABLE:
+            with st.spinner("Verifying your payment..."):
+                result = verify_and_process_payment(session_id, st.session_state.username)
+                if result["success"]:
+                    st.success(result["message"])
+                    st.balloons()
+                else:
+                    st.warning(result["message"])
+        else:
+            st.warning("Payment verification unavailable. Please contact support.")
+
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.rerun()
+    else:
+        st.session_state.payment_checked = True
 
 # ==========================================
 # 4. MAIN DASHBOARD (Logged In)
@@ -558,6 +598,37 @@ with st.sidebar:
                     st.button("💎 Upgrade to Fund", use_container_width=True, disabled=True, key="sidebar_fund_btn")
             else:
                 st.success("✅ Current plan")
+                
+                        # ===== PAYMENT CHANGE: Check My Subscription button =====
+        st.markdown("---")
+        st.markdown("##### 🔍 Subscription Status")
+        if st.button("🔄 Check My Subscription", use_container_width=True, key="check_sub_btn"):
+            if PAYMENTS_AVAILABLE:
+                db_sub_check = SessionLocal()
+                sub_status = check_subscription(db_sub_check, st.session_state.username)
+                db_sub_check.close()
+                plan = sub_status.get("plan", "starter")
+                status = sub_status.get("status", "inactive")
+                end_date = sub_status.get("end_date", "N/A")
+
+                if plan != "starter" and status == "active":
+                    st.success(f"✅ You are on the **{plan.title()}** plan. Status: **Active**")
+                    if end_date and end_date != "None":
+                        st.caption(f"Renews: {end_date}")
+                elif status == "past_due":
+                    st.warning("⚠️ Your subscription payment is past due. Please update your payment method in Stripe.")
+                elif status == "expired":
+                    st.warning("⚠️ Your subscription has expired. You've been moved to the Starter plan.")
+                else:
+                    st.info("You are on the **Starter (Free)** plan.")
+            else:
+                st.warning("Payment system unavailable.")
+
+        st.markdown("---")
+        st.markdown("##### 💳 Manage Billing")
+        st.caption("Cancel, update payment method, or view invoices.")
+        st.link_button("💳 Manage My Subscription", "https://billing.stripe.com/p/login/test_XXXXXXXXXXXX", use_container_width=True)
+        # ===== END PAYMENT CHANGE =====
 
         # ---- ADMIN ----
         if user_tier == "admin" and TIERS_AVAILABLE:
