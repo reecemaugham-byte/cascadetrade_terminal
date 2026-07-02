@@ -256,6 +256,38 @@ if "new_symbols_found" not in st.session_state:
 
 if "upcoming_ipos_found" not in st.session_state:
     st.session_state.upcoming_ipos_found = []
+    
+    # ==========================================
+# PAYMENT REDIRECT HANDLER (before auth check)
+# ==========================================
+# This MUST run before the login check because Stripe redirects
+# clear the Streamlit session, so the user appears logged out.
+# We verify the payment using client_reference_id from Stripe,
+# not from the Streamlit session.
+query_params = st.query_params
+if "session_id" in query_params and not st.session_state.get("payment_processed", False):
+    session_id = query_params["session_id"]
+    st.session_state.payment_processed = True
+
+    if PAYMENTS_AVAILABLE:
+        with st.spinner("Verifying your payment..."):
+            # verify_and_process_payment gets the username from
+            # the Stripe session's client_reference_id, not from
+            # the Streamlit session, so it works even if logged out
+            result = verify_and_process_payment(session_id, st.session_state.get("username", ""))
+            if result["success"]:
+                st.success(f"🎉 {result['message']} Please log in to access your upgraded account.")
+                st.balloons()
+            else:
+                st.warning(result["message"])
+    else:
+        st.warning("Payment verification unavailable. Please contact support.")
+
+    # Clear the query params so this doesn't run again
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
 
 # ==========================================
 # 3. AUTHENTICATION GATE
@@ -475,34 +507,6 @@ if st.session_state.needs_onboarding:
             st.rerun()
 
     st.stop()
-    
-    # ==========================================
-# PAYMENT REDIRECT HANDLER
-# ==========================================
-if st.session_state.get("authenticated") and not st.session_state.get("payment_checked", False):
-    query_params = st.query_params
-    if "session_id" in query_params:
-        session_id = query_params["session_id"]
-        st.session_state.payment_checked = True
-
-        if PAYMENTS_AVAILABLE:
-            with st.spinner("Verifying your payment..."):
-                result = verify_and_process_payment(session_id, st.session_state.username)
-                if result["success"]:
-                    st.success(result["message"])
-                    st.balloons()
-                else:
-                    st.warning(result["message"])
-        else:
-            st.warning("Payment verification unavailable. Please contact support.")
-
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
-    else:
-        st.session_state.payment_checked = True
 
 # ==========================================
 # 4. MAIN DASHBOARD (Logged In)
