@@ -37,7 +37,7 @@ STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 # Your app's public URL — MUST match your actual DigitalOcean domain
-APP_URL = os.environ.get("APP_URL", "https://walrus-app-xg6w8.ondigitalocean.app")
+APP_URL = os.environ.get("APP_URL", "https://cascadetrade-terminal.onrender.com")
 
 # Static Payment Links — used as fallback if Checkout Session creation fails
 # You created these in your Stripe Dashboard (Products → Payment Links)
