@@ -12,7 +12,7 @@ openai
 sqlalchemy
 bcrypt
 requests
-urllib3
+urllib3<2
 psycopg2-binary
 flask
 stripe
