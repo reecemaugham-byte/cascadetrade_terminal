@@ -11,8 +11,8 @@ alpaca-trade-api
 openai
 sqlalchemy
 bcrypt
-requests
-urllib3<2
+requests>=2.31.0
+urllib3==1.26.19
 psycopg2-binary
 flask
 stripe
