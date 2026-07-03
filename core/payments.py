@@ -16,6 +16,7 @@ Alternative: User clicks "✅ Verify My Payment" button after login
 7. If found, user is upgraded automatically
 
 NO SEPARATE WEBHOOK SERVER NEEDED.
+STRIPE OBJECT ACCESS: Only use getattr() — NEVER .get() or dict()
 """
 
 import os
@@ -202,8 +203,6 @@ def get_payment_link(plan: str, username: str = "") -> str:
     try:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
-        logger.info(f"DEBUG: STRIPE_SECRET_KEY starts with: {STRIPE_SECRET_KEY[:8]}..." if STRIPE_SECRET_KEY else "DEBUG: STRIPE_SECRET_KEY is EMPTY")
-        logger.info(f"DEBUG: session_id received: '{session_id}'")
 
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -253,7 +252,7 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
     """
     Verify a Stripe Checkout Session and upgrade the user if paid.
     Called when the user returns from Stripe with a session_id parameter.
-    Uses getattr() for Stripe objects (not .get() which causes AttributeError).
+    Only uses getattr() for Stripe objects — NEVER .get() or dict()
     """
     if not STRIPE_SECRET_KEY:
         return {
@@ -266,30 +265,41 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
 
+        logger.info(f"Verifying payment session: {session_id[:30]}...")
+
         session = stripe.checkout.Session.retrieve(session_id)
 
-        # Use getattr() for Stripe objects — they are NOT dicts
-        payment_status = getattr(session, 'payment_status', '') or ''
+        # Use only getattr() for Stripe objects — NEVER .get() or dict()
+        payment_status = getattr(session, 'payment_status', None)
+        if payment_status is None:
+            payment_status = ''
+        logger.info(f"Payment status: {payment_status}")
 
         if payment_status != "paid":
             return {
                 "success": False,
-                "message": f"Payment status is '{payment_status}', not 'paid'. Please try again or contact support.",
+                "message": f"Payment status is '{payment_status}', not 'paid'. Please try again.",
                 "plan": "",
             }
 
         # Get username from client_reference_id or metadata
-        client_ref = getattr(session, 'client_reference_id', '') or ''
-        metadata_obj = getattr(session, 'metadata', None)
-        metadata = dict(metadata_obj) if metadata_obj else {}
+        client_ref = getattr(session, 'client_reference_id', None) or ''
 
+        # Access metadata properties directly — no .get() or dict()
+        metadata_obj = getattr(session, 'metadata', None)
+        plan_from_meta = ""
+        username_from_meta = ""
+
+        if metadata_obj is not None:
+            plan_from_meta = getattr(metadata_obj, 'plan', '') or ''
+            username_from_meta = getattr(metadata_obj, 'username', '') or ''
 
         # Priority: client_reference_id > metadata.username > passed-in username
         if client_ref:
             username = client_ref
             logger.info(f"Using client_reference_id from Stripe: {username}")
-        elif metadata and metadata.get("username"):
-            username = metadata["username"]
+        elif username_from_meta:
+            username = username_from_meta
             logger.info(f"Using metadata username from Stripe: {username}")
         elif not username:
             return {
@@ -301,20 +311,31 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         # Determine the plan
         plan = ""
 
-        if metadata and metadata.get("plan"):
-            plan = metadata["plan"].lower()
+        if plan_from_meta:
+            plan = plan_from_meta.lower()
+            logger.info(f"Plan from metadata: {plan}")
         else:
             amount_total = getattr(session, 'amount_total', 0) or 0
+            logger.info(f"No plan in metadata, checking amount: {amount_total}")
             if amount_total:
                 for plan_key, plan_info in STRIPE_PLANS.items():
                     if abs(amount_total - plan_info["amount"]) < 100:
                         plan = plan_key
                         break
 
+            if not plan:
+                amount_total = getattr(session, 'amount_total', 0) or 0
+                if amount_total >= 9900:
+                    plan = "fund"
+                elif amount_total >= 2900:
+                    plan = "pro"
+
+            logger.info(f"Plan determined from amount: {plan}")
+
         if plan not in ["pro", "fund", "admin"]:
             return {
                 "success": False,
-                "message": "Could not determine plan from payment. Please contact support.",
+                "message": f"Could not determine plan. Please contact support. Amount: {getattr(session, 'amount_total', 'unknown')}",
                 "plan": "",
             }
 
@@ -323,6 +344,7 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         start_date = datetime.datetime.utcnow()
         end_date = start_date + datetime.timedelta(days=30)
 
+        # Upgrade the user
         db = SessionLocal()
         try:
             success = upgrade_user(
@@ -353,13 +375,9 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
 
     except Exception as e:
         logger.error(f"Payment verification error: {e}", exc_info=True)
-        logger.error(f"DEBUG: Full exception type: {type(e).__name__}")
-        logger.error(f"DEBUG: Full exception args: {e.args}")
-        logger.error(f"DEBUG: session_id was: '{session_id}'")
-        logger.error(f"DEBUG: STRIPE_SECRET_KEY length: {len(STRIPE_SECRET_KEY) if STRIPE_SECRET_KEY else 0}")
         return {
             "success": False,
-            "message": f"Could not verify payment. Error: {type(e).__name__}: {e}. Session ID: '{session_id[:20]}...' if len(str(session_id)) > 20 else session_id",
+            "message": f"Could not verify payment. Error type: {type(e).__name__}, message: {str(e)}",
             "plan": "",
         }
 
@@ -367,9 +385,8 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
 def verify_recent_payment_by_username(username: str) -> dict:
     """
     Check Stripe for recent checkout sessions for this username.
-    Used as a fallback when the session_id redirect doesn't work.
-    User clicks "✅ Verify My Payment" button after logging in.
-    Uses getattr() for Stripe objects.
+    Fallback when session_id redirect doesn't work.
+    Only uses getattr() for Stripe objects.
     """
     if not STRIPE_SECRET_KEY:
         return {
@@ -382,20 +399,30 @@ def verify_recent_payment_by_username(username: str) -> dict:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
 
+        logger.info(f"Searching Stripe for recent payments for user: {username}")
+
         sessions = stripe.checkout.Session.list(limit=25)
 
         for session in sessions.data:
-            client_ref = getattr(session, 'client_reference_id', '') or ''
-            metadata_obj = getattr(session, 'metadata', None)
-            metadata = dict(metadata_obj) if metadata_obj else {}
-
+            client_ref = getattr(session, 'client_reference_id', None) or ''
             payment_status = getattr(session, 'payment_status', '') or ''
 
-            if (client_ref == username or (metadata and metadata.get("username") == username)) and payment_status == "paid":
+            # Access metadata directly — no .get() or dict()
+            metadata_obj = getattr(session, 'metadata', None)
+            plan_from_meta = ""
+            username_from_meta = ""
+
+            if metadata_obj is not None:
+                plan_from_meta = getattr(metadata_obj, 'plan', '') or ''
+                username_from_meta = getattr(metadata_obj, 'username', '') or ''
+
+            # Check if this session belongs to our user and is paid
+            if (client_ref == username or username_from_meta == username) and payment_status == "paid":
+                # Determine plan
                 plan = ""
 
-                if metadata and metadata.get("plan"):
-                    plan = metadata["plan"].lower()
+                if plan_from_meta:
+                    plan = plan_from_meta.lower()
                 else:
                     amount_total = getattr(session, 'amount_total', 0) or 0
                     for plan_key, plan_info in STRIPE_PLANS.items():
@@ -403,7 +430,7 @@ def verify_recent_payment_by_username(username: str) -> dict:
                             plan = plan_key
                             break
 
-                if plan not in ["pro", "fund", "admin"]:
+                if not plan:
                     amount_total = getattr(session, 'amount_total', 0) or 0
                     if amount_total >= 9900:
                         plan = "fund"
@@ -426,7 +453,7 @@ def verify_recent_payment_by_username(username: str) -> dict:
                             end_date=end_date,
                         )
                         if success:
-                            logger.info(f"✅ Manual payment verification: {username} upgraded to {plan}")
+                            logger.info(f"✅ Manual verification: {username} upgraded to {plan}")
                             return {
                                 "success": True,
                                 "message": f"Welcome to {plan.title()}! Your subscription is now active.",
@@ -451,7 +478,7 @@ def verify_recent_payment_by_username(username: str) -> dict:
         logger.error(f"Recent payment verification error: {e}", exc_info=True)
         return {
             "success": False,
-            "message": f"Error checking payments: {str(e)}",
+            "message": f"Error checking payments: {type(e).__name__}: {str(e)}",
             "plan": "",
         }
 
@@ -693,6 +720,7 @@ def admin_set_tier(db, username: str, tier: str,
                    expires: datetime.datetime = None) -> bool:
     """
     Admin override: manually set a user's tier and optionally set expiry.
+    This bypasses Stripe and directly sets the tier.
     """
     from core.database import set_user_tier
     return set_user_tier(db, username, tier, expires=expires)
