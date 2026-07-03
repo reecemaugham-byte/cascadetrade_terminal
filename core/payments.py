@@ -11,8 +11,11 @@ PAYMENT FLOW:
 4. Streamlit app detects session_id, calls verify_and_process_payment()
 5. Stripe API confirms payment → user is upgraded in the database
 
+Alternative: User clicks "✅ Verify My Payment" button after login
+6. verify_recent_payment_by_username() searches Stripe for recent payments
+7. If found, user is upgraded automatically
+
 NO SEPARATE WEBHOOK SERVER NEEDED.
-Webhook handler is kept for optional future use.
 """
 
 import os
@@ -36,11 +39,10 @@ logger = logging.getLogger(__name__)
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
-# Your app's public URL — MUST match your actual DigitalOcean domain
+# Your app's public URL — used for Stripe payment redirects
 APP_URL = os.environ.get("APP_URL", "https://walrus-app-xg6w8.ondigitalocean.app")
 
 # Static Payment Links — used as fallback if Checkout Session creation fails
-# You created these in your Stripe Dashboard (Products → Payment Links)
 STRIPE_PAYMENT_LINKS = {
     "pro": os.environ.get("STRIPE_PRO_LINK", "https://buy.stripe.com/test_6oU9AMd581WtfmAbepcbC00"),
     "fund": os.environ.get("STRIPE_FUND_LINK", "https://buy.stripe.com/test_dRm6oA1mqbx3b6k96hcbC01"),
@@ -50,15 +52,15 @@ STRIPE_PAYMENT_LINKS = {
 STRIPE_PLANS = {
     "pro": {
         "name": "CascadeTrade Pro",
-        "amount": 2900,      # £29.00 in pence (change to cents if using USD)
-        "currency": "gbp",   # Change to "usd" if pricing in US dollars
+        "amount": 2900,
+        "currency": "gbp",
         "interval": "month",
         "description": "Advanced signals, AI sentiment, live trading, DRIP calculator, profit skimming",
     },
     "fund": {
         "name": "CascadeTrade Fund",
-        "amount": 9900,      # £99.00 in pence (change to cents if using USD)
-        "currency": "gbp",   # Change to "usd" if pricing in US dollars
+        "amount": 9900,
+        "currency": "gbp",
         "interval": "month",
         "description": "Everything in Pro plus multiple accounts, auto-rebalancing, weekly reports, priority support",
     },
@@ -69,13 +71,12 @@ STRIPE_PLANS = {
 # SUBSCRIPTION MANAGEMENT
 # ==========================================
 
-def upgrade_user(db: SessionLocal, username: str, plan: str,
+def upgrade_user(db, username: str, plan: str,
                  subscription_id: str = "",
                  start_date: datetime.datetime = None,
                  end_date: datetime.datetime = None) -> bool:
     """
     Upgrade a user to a paid plan (pro, fund, or admin).
-    Called when a Stripe checkout is verified as paid.
     Delegates to database.update_subscription for consistency.
     """
     valid_plans = ["pro", "fund", "admin"]
@@ -101,10 +102,9 @@ def upgrade_user(db: SessionLocal, username: str, plan: str,
     return result
 
 
-def downgrade_user(db: SessionLocal, username: str) -> bool:
+def downgrade_user(db, username: str) -> bool:
     """
     Downgrade a user back to starter.
-    Called when a subscription expires or is cancelled.
     Delegates to database.deactivate_subscription for consistency.
     """
     result = deactivate_subscription(db, username)
@@ -117,10 +117,9 @@ def downgrade_user(db: SessionLocal, username: str) -> bool:
     return result
 
 
-def update_payment_failed(db: SessionLocal, username: str) -> bool:
+def update_payment_failed(db, username: str) -> bool:
     """
     Mark a user's subscription as past_due when payment fails.
-    The user keeps their tier for now but sees a warning in the app.
     """
     user = db.query(User).filter(User.username == username).first()
     if not user:
@@ -133,12 +132,10 @@ def update_payment_failed(db: SessionLocal, username: str) -> bool:
     return True
 
 
-def check_subscription(db: SessionLocal, username: str) -> dict:
+def check_subscription(db, username: str) -> dict:
     """
     Check a user's current subscription status and effective tier.
-    Returns a dictionary with plan details.
-
-    This also handles automatic downgrade if the subscription has expired.
+    Handles automatic downgrade if the subscription has expired.
     """
     user = db.query(User).filter(User.username == username).first()
     if not user:
@@ -152,7 +149,6 @@ def check_subscription(db: SessionLocal, username: str) -> dict:
 
     now = datetime.datetime.utcnow()
 
-    # --- Check for subscription expiry ---
     if user.subscription_status == "active" and user.subscription_end:
         if user.subscription_end < now:
             logger.info(f"Subscription expired for '{username}', downgrading")
@@ -166,9 +162,8 @@ def check_subscription(db: SessionLocal, username: str) -> dict:
                 "end_date": None,
             }
 
-    # --- Check for past_due grace period ---
     if user.subscription_status == "past_due":
-        pass  # UI should show a warning
+        pass
 
     return {
         "plan": getattr(user, 'subscription_plan', 'starter') or 'starter',
@@ -183,16 +178,8 @@ def get_payment_link(plan: str, username: str = "") -> str:
     """
     Create a Stripe Checkout Session and return the URL.
 
-    This creates a Checkout Session via the Stripe API, which allows
-    us to pass client_reference_id (username) and metadata (plan)
-    so the verification handler can identify which user paid and
-    which plan they chose.
-
-    After payment, Stripe redirects the user back to:
+    After payment, Stripe redirects to:
       APP_URL/?session_id={CHECKOUT_SESSION_ID}&plan={plan}
-
-    The Streamlit app detects session_id in the URL, verifies the
-    payment with Stripe, and upgrades the user.
 
     Falls back to static Payment Links if the Stripe API call fails.
     """
@@ -238,7 +225,6 @@ def get_payment_link(plan: str, username: str = "") -> str:
                 "plan": plan_lower,
                 "username": username or "",
             },
-            # After payment, Stripe redirects here with session_id
             success_url=f"{APP_URL}/?session_id={{CHECKOUT_SESSION_ID}}&plan={plan_lower}",
             cancel_url=f"{APP_URL}/?payment=cancelled",
         )
@@ -248,7 +234,6 @@ def get_payment_link(plan: str, username: str = "") -> str:
 
     except Exception as e:
         logger.error(f"Stripe Checkout Session creation failed: {e}")
-        # Fallback to static payment links
         fallback_url = STRIPE_PAYMENT_LINKS.get(plan_lower, "")
         if fallback_url:
             logger.warning(f"Falling back to static payment link for {plan_lower}")
@@ -259,18 +244,14 @@ def get_payment_link(plan: str, username: str = "") -> str:
 
 
 # ==========================================
-# STRIPE PAYMENT VERIFICATION (Client-Side)
+# STRIPE PAYMENT VERIFICATION
 # ==========================================
 
 def verify_and_process_payment(session_id: str, username: str) -> dict:
     """
     Verify a Stripe Checkout Session and upgrade the user if paid.
-
     Called when the user returns from Stripe with a session_id parameter.
-    Uses the Stripe API directly — no webhook server needed.
-
-    Returns:
-        dict with 'success' (bool), 'message' (str), 'plan' (str)
+    Uses getattr() for Stripe objects (not .get() which causes AttributeError).
     """
     if not STRIPE_SECRET_KEY:
         return {
@@ -283,11 +264,11 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
 
-        # Retrieve the checkout session from Stripe
         session = stripe.checkout.Session.retrieve(session_id)
 
-        # Check payment status
-        payment_status = session.get("payment_status", "")
+        # Use getattr() for Stripe objects — they are NOT dicts
+        payment_status = getattr(session, 'payment_status', '') or ''
+
         if payment_status != "paid":
             return {
                 "success": False,
@@ -295,12 +276,10 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
                 "plan": "",
             }
 
-        # Use client_reference_id from Stripe to identify the user
-        # This is more reliable than the Streamlit session username,
-        # because the session may be lost after a Stripe redirect.
-        client_ref = session.get("client_reference_id", "")
-        metadata = session.get("metadata", {}) or {}
-    
+        # Get username from client_reference_id or metadata
+        client_ref = getattr(session, 'client_reference_id', '') or ''
+        metadata = getattr(session, 'metadata', None) or {}
+
         # Priority: client_reference_id > metadata.username > passed-in username
         if client_ref:
             username = client_ref
@@ -311,22 +290,18 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         elif not username:
             return {
                 "success": False,
-                "message": "Could not identify your account. Please log in and try again, or contact support.",
+                "message": "Could not identify your account. Please log in and try the 'Verify My Payment' button.",
                 "plan": "",
             }
 
-        # Determine the plan from metadata or amount
-        metadata = session.get("metadata", {}) or {}
+        # Determine the plan
         plan = ""
 
-        # Strategy 1: metadata[plan] from checkout session
         if metadata and metadata.get("plan"):
             plan = metadata["plan"].lower()
         else:
-            # Strategy 2: Determine from payment amount
-            amount_total = session.get("amount_total", 0)
+            amount_total = getattr(session, 'amount_total', 0) or 0
             if amount_total:
-                # Check against known plan prices
                 for plan_key, plan_info in STRIPE_PLANS.items():
                     if abs(amount_total - plan_info["amount"]) < 100:
                         plan = plan_key
@@ -335,16 +310,15 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         if plan not in ["pro", "fund", "admin"]:
             return {
                 "success": False,
-                "message": f"Could not determine plan from payment. Please contact support.",
+                "message": "Could not determine plan from payment. Please contact support.",
                 "plan": "",
             }
 
         # Get subscription details
-        subscription_id = session.get("subscription", "") or ""
+        subscription_id = str(getattr(session, 'subscription', '') or '')
         start_date = datetime.datetime.utcnow()
         end_date = start_date + datetime.timedelta(days=30)
 
-        # Upgrade the user in the database
         db = SessionLocal()
         try:
             success = upgrade_user(
@@ -377,13 +351,103 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
         logger.error(f"Payment verification error: {e}", exc_info=True)
         return {
             "success": False,
-            "message": f"Could not verify payment. Please contact support. Error: {str(e)[:100]}",
+            "message": f"Could not verify payment. Error: {str(e)}",
+            "plan": "",
+        }
+
+
+def verify_recent_payment_by_username(username: str) -> dict:
+    """
+    Check Stripe for recent checkout sessions for this username.
+    Used as a fallback when the session_id redirect doesn't work.
+    User clicks "✅ Verify My Payment" button after logging in.
+    Uses getattr() for Stripe objects.
+    """
+    if not STRIPE_SECRET_KEY:
+        return {
+            "success": False,
+            "message": "Stripe API key not configured. Please set STRIPE_SECRET_KEY environment variable.",
+            "plan": "",
+        }
+
+    try:
+        import stripe
+        stripe.api_key = STRIPE_SECRET_KEY
+
+        sessions = stripe.checkout.Session.list(limit=25)
+
+        for session in sessions.data:
+            client_ref = getattr(session, 'client_reference_id', '') or ''
+            metadata = getattr(session, 'metadata', None) or {}
+            payment_status = getattr(session, 'payment_status', '') or ''
+
+            if (client_ref == username or (metadata and metadata.get("username") == username)) and payment_status == "paid":
+                plan = ""
+
+                if metadata and metadata.get("plan"):
+                    plan = metadata["plan"].lower()
+                else:
+                    amount_total = getattr(session, 'amount_total', 0) or 0
+                    for plan_key, plan_info in STRIPE_PLANS.items():
+                        if abs(amount_total - plan_info["amount"]) < 100:
+                            plan = plan_key
+                            break
+
+                if plan not in ["pro", "fund", "admin"]:
+                    amount_total = getattr(session, 'amount_total', 0) or 0
+                    if amount_total >= 9900:
+                        plan = "fund"
+                    elif amount_total >= 2900:
+                        plan = "pro"
+
+                if plan in ["pro", "fund", "admin"]:
+                    subscription_id = str(getattr(session, 'subscription', '') or '')
+                    start_date = datetime.datetime.utcnow()
+                    end_date = start_date + datetime.timedelta(days=30)
+
+                    db = SessionLocal()
+                    try:
+                        success = upgrade_user(
+                            db=db,
+                            username=username,
+                            plan=plan,
+                            subscription_id=subscription_id,
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
+                        if success:
+                            logger.info(f"✅ Manual payment verification: {username} upgraded to {plan}")
+                            return {
+                                "success": True,
+                                "message": f"Welcome to {plan.title()}! Your subscription is now active.",
+                                "plan": plan,
+                            }
+                        else:
+                            return {
+                                "success": False,
+                                "message": "Payment found but upgrade failed. Please contact support.",
+                                "plan": plan,
+                            }
+                    finally:
+                        db.close()
+
+        return {
+            "success": False,
+            "message": "No recent paid checkout found for your account. If you just paid, please wait 1-2 minutes and try again.",
+            "plan": "",
+        }
+
+    except Exception as e:
+        logger.error(f"Recent payment verification error: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"Error checking payments: {str(e)}",
             "plan": "",
         }
 
 
 # ==========================================
-# STRIPE WEBHOOK HANDLER (Optional — for future use)
+# STRIPE WEBHOOK HANDLER (Optional)
 # ==========================================
 
 def verify_webhook_signature(payload: bytes, sig_header: str) -> bool:
@@ -425,19 +489,10 @@ def verify_webhook_signature(payload: bytes, sig_header: str) -> bool:
         return False
 
 
-def find_user_for_subscription(db: SessionLocal, event_data: dict):
+def find_user_for_subscription(db, event_data: dict):
     """
     Find the CascadeTrade user from a Stripe event's data object.
-
-    Tries multiple strategies:
-    1. client_reference_id (set during checkout via get_payment_link)
-    2. metadata.username (set during checkout via get_payment_link)
-    3. Stripe subscription_id stored in our DB
-    4. Email match (if we stored the user's email)
-
-    Returns the User object or None.
     """
-    # Strategy 1: client_reference_id
     client_ref = event_data.get("client_reference_id", "")
     if client_ref:
         user = db.query(User).filter(User.username == client_ref).first()
@@ -445,7 +500,6 @@ def find_user_for_subscription(db: SessionLocal, event_data: dict):
             logger.info(f"Found user by client_reference_id: {client_ref}")
             return user
 
-    # Strategy 2: metadata.username
     metadata = event_data.get("metadata", {})
     if metadata and metadata.get("username"):
         username = metadata["username"]
@@ -454,7 +508,6 @@ def find_user_for_subscription(db: SessionLocal, event_data: dict):
             logger.info(f"Found user by metadata username: {username}")
             return user
 
-    # Strategy 3: Stripe subscription ID
     sub_id = event_data.get("subscription", "")
     if sub_id and isinstance(sub_id, str):
         user = get_user_by_subscription_id(db, sub_id)
@@ -462,7 +515,6 @@ def find_user_for_subscription(db: SessionLocal, event_data: dict):
             logger.info(f"Found user by subscription_id: {sub_id}")
             return user
 
-    # Strategy 4: Email match
     customer_email = ""
     customer_details = event_data.get("customer_details", {})
     if customer_details:
@@ -476,25 +528,20 @@ def find_user_for_subscription(db: SessionLocal, event_data: dict):
             logger.info(f"Found user by email: {customer_email}")
             return user
 
-    logger.error(f"Could not find user for checkout event: {event_data.get('id', 'unknown')}. "
-                 f"client_ref={client_ref}, metadata={metadata}, sub_id={sub_id}, email={customer_email}")
+    logger.error(f"Could not find user for event: client_ref={client_ref}, metadata={metadata}, sub_id={sub_id}, email={customer_email}")
     return None
 
 
 def determine_plan_from_event(event_data: dict) -> str:
     """
     Determine the plan (pro/fund) from a Stripe event.
-
-    Checks metadata first, then falls back to amount matching.
     """
-    # Strategy 1: metadata from checkout session
     metadata = event_data.get("metadata", {})
     if metadata and metadata.get("plan"):
         plan = metadata["plan"].lower()
         if plan in ("pro", "fund", "admin"):
             return plan
 
-    # Strategy 2: Match by amount
     amount_total = event_data.get("amount_total", 0)
     if amount_total:
         for plan_key, plan_info in STRIPE_PLANS.items():
@@ -507,15 +554,7 @@ def determine_plan_from_event(event_data: dict) -> str:
 def handle_stripe_webhook_event(event: dict) -> dict:
     """
     Process a single Stripe webhook event.
-
-    This is the main entry point for webhook processing.
     Only needed if you set up a webhook server later.
-
-    Supported event types:
-    - checkout.session.completed — new subscription purchase
-    - customer.subscription.updated — plan change or renewal
-    - customer.subscription.deleted — cancellation
-    - invoice.payment_failed — payment issue
     """
     event_type = event.get("type", "")
     event_data = event.get("data", {}).get("object", {})
@@ -525,7 +564,6 @@ def handle_stripe_webhook_event(event: dict) -> dict:
     db = SessionLocal()
 
     try:
-        # ---- checkout.session.completed ----
         if event_type == "checkout.session.completed":
             user = find_user_for_subscription(db, event_data)
             if not user:
@@ -556,7 +594,6 @@ def handle_stripe_webhook_event(event: dict) -> dict:
             else:
                 return {"success": False, "message": "Upgrade failed"}
 
-        # ---- customer.subscription.updated ----
         elif event_type == "customer.subscription.updated":
             subscription_id = event_data.get("id", "")
             stripe_status = event_data.get("status", "")
@@ -567,7 +604,7 @@ def handle_stripe_webhook_event(event: dict) -> dict:
                 return {"success": False, "message": "User not found for subscription update"}
 
             if stripe_status == "active":
-                plan = determine_plan_from_event(event_data) or user.subscription_plan or "starter"
+                plan = determine_plan_from_event(event_data) or getattr(user, 'subscription_plan', 'starter') or "starter"
                 current_period_end = event_data.get("current_period_end")
 
                 end_date = None
@@ -598,7 +635,6 @@ def handle_stripe_webhook_event(event: dict) -> dict:
                 logger.info(f"Unhandled subscription status: {stripe_status}")
                 return {"success": True, "message": f"Subscription status: {stripe_status}"}
 
-        # ---- customer.subscription.deleted ----
         elif event_type == "customer.subscription.deleted":
             subscription_id = event_data.get("id", "")
             user = get_user_by_subscription_id(db, subscription_id)
@@ -611,7 +647,6 @@ def handle_stripe_webhook_event(event: dict) -> dict:
             logger.info(f"Subscription deleted: {user.username} → starter")
             return {"success": True, "message": f"Subscription deleted for {user.username}"}
 
-        # ---- invoice.payment_failed ----
         elif event_type == "invoice.payment_failed":
             subscription_id = event_data.get("subscription", "")
             user = get_user_by_subscription_id(db, subscription_id)
@@ -644,11 +679,10 @@ def handle_stripe_webhook_event(event: dict) -> dict:
 # MANUAL TIER OVERRIDE (Admin)
 # ==========================================
 
-def admin_set_tier(db: SessionLocal, username: str, tier: str,
+def admin_set_tier(db, username: str, tier: str,
                    expires: datetime.datetime = None) -> bool:
     """
     Admin override: manually set a user's tier and optionally set expiry.
-    This bypasses Stripe and directly sets the tier.
     """
     from core.database import set_user_tier
     return set_user_tier(db, username, tier, expires=expires)
