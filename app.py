@@ -181,13 +181,13 @@ def ensure_db_columns():
 
         columns_to_add = [
             ("terms_accepted", "BOOLEAN DEFAULT 0"),
-            ("terms_accepted_date", "DATETIME"),
+            ("terms_accepted_date", "TIMESTAMP"),
             ("login_attempts", "INTEGER DEFAULT 0"),
-            ("account_locked_until", "DATETIME"),
-            ("created_at", "DATETIME DEFAULT CURRENT_TIMESTAMP"),
-            ("last_login", "DATETIME"),
+            ("account_locked_until", "TIMESTAMP"),
+            ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("last_login", "TIMESTAMP"),
             ("tier", "VARCHAR DEFAULT 'starter'"),
-            ("tier_expires", "DATETIME"),
+            ("tier_expires", "TIMESTAMP"),
             ("finnhub_api_key", "VARCHAR"),
         ]
 
@@ -195,9 +195,9 @@ def ensure_db_columns():
             if col_name not in existing_columns:
                 try:
                     db.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"))
-                    db.commit()
                 except Exception:
-                    db.rollback()
+                    # ignore individual column add failures
+                    pass
     except Exception as e:
         print(f"DB migration note: {e}")
     finally:
