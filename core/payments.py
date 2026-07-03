@@ -202,6 +202,8 @@ def get_payment_link(plan: str, username: str = "") -> str:
     try:
         import stripe
         stripe.api_key = STRIPE_SECRET_KEY
+        logger.info(f"DEBUG: STRIPE_SECRET_KEY starts with: {STRIPE_SECRET_KEY[:8]}..." if STRIPE_SECRET_KEY else "DEBUG: STRIPE_SECRET_KEY is EMPTY")
+        logger.info(f"DEBUG: session_id received: '{session_id}'")
 
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -351,9 +353,13 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
 
     except Exception as e:
         logger.error(f"Payment verification error: {e}", exc_info=True)
+        logger.error(f"DEBUG: Full exception type: {type(e).__name__}")
+        logger.error(f"DEBUG: Full exception args: {e.args}")
+        logger.error(f"DEBUG: session_id was: '{session_id}'")
+        logger.error(f"DEBUG: STRIPE_SECRET_KEY length: {len(STRIPE_SECRET_KEY) if STRIPE_SECRET_KEY else 0}")
         return {
             "success": False,
-            "message": f"Could not verify payment. Error: {str(e)}",
+            "message": f"Could not verify payment. Error: {type(e).__name__}: {e}. Session ID: '{session_id[:20]}...' if len(str(session_id)) > 20 else session_id",
             "plan": "",
         }
 
