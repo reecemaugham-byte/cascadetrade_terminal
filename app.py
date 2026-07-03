@@ -188,7 +188,7 @@ def ensure_db_columns():
             ("last_login", "DATETIME"),
             ("tier", "VARCHAR DEFAULT 'starter'"),
             ("tier_expires", "DATETIME"),
-            ("finnhub_api_key", "VARCHAR"),  # FIX: Added Finnhub column
+            ("finnhub_api_key", "VARCHAR"),
         ]
 
         for col_name, col_type in columns_to_add:
@@ -211,6 +211,29 @@ ensure_db_columns()
 def watermark_csv(csv_string: str) -> str:
     watermark = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
     return csv_string + watermark
+
+# === CHANGE 2: AI Assistant function ===
+def get_ai_response(user_message, system_prompt, api_key):
+    """Call OpenAI API and return the response for the AI Assistant."""
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in st.session_state.messages[-10:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_message})
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Error: {str(e)}"
+# === END CHANGE 2 ===
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
@@ -256,14 +279,15 @@ if "new_symbols_found" not in st.session_state:
 
 if "upcoming_ipos_found" not in st.session_state:
     st.session_state.upcoming_ipos_found = []
-    
-    # ==========================================
+
+# === CHANGE 2: Initialize chat history for AI Assistant ===
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+# === END CHANGE 2 ===
+
+# ==========================================
 # PAYMENT REDIRECT HANDLER (before auth check)
 # ==========================================
-# This MUST run before the login check because Stripe redirects
-# clear the Streamlit session, so the user appears logged out.
-# We verify the payment using client_reference_id from Stripe,
-# not from the Streamlit session.
 query_params = st.query_params
 if "session_id" in query_params and not st.session_state.get("payment_processed", False):
     session_id = query_params["session_id"]
@@ -271,9 +295,6 @@ if "session_id" in query_params and not st.session_state.get("payment_processed"
 
     if PAYMENTS_AVAILABLE:
         with st.spinner("Verifying your payment..."):
-            # verify_and_process_payment gets the username from
-            # the Stripe session's client_reference_id, not from
-            # the Streamlit session, so it works even if logged out
             result = verify_and_process_payment(session_id, st.session_state.get("username", ""))
             if result["success"]:
                 st.success(f"🎉 {result['message']} Please log in to access your upgraded account.")
@@ -283,7 +304,6 @@ if "session_id" in query_params and not st.session_state.get("payment_processed"
     else:
         st.warning("Payment verification unavailable. Please contact support.")
 
-    # Clear the query params so this doesn't run again
     try:
         st.query_params.clear()
     except Exception:
@@ -316,7 +336,7 @@ if not st.session_state.authenticated:
                     if user:
                         st.session_state.authenticated = True
                         st.session_state.username = _username
-                        
+
                         if PAYMENTS_AVAILABLE:
                             db_check = SessionLocal()
                             sub_status = check_subscription(db_check, _username)
@@ -335,14 +355,14 @@ if not st.session_state.authenticated:
                                             st.warning("Your Pro subscription has expired. You've been moved to Starter.")
                                 except Exception:
                                     pass
-                       
+
                         if not _terms_accepted:
                             st.session_state.needs_onboarding = True
                             st.session_state.onboarding_step = 1
                         else:
                             st.session_state.trading_engine.terms_accepted = True
                             st.session_state.trading_engine.terms_accepted_date = datetime.utcnow()
-                        
+
                         st.session_state.username = _username
                         st.session_state.trading_engine.set_username(_username)
                         st.session_state.trading_engine._load_trade_log()
@@ -517,16 +537,57 @@ if TIERS_AVAILABLE:
     user_tier = get_user_tier(st.session_state.username)
     tier_display = get_tier_display(st.session_state.username)
 
+# ============================================================
+# === CHANGE 1 & 3: COMPACT SIDEBAR HEADER + SPY/VIX ===
+# ============================================================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
+    # --- COMPACT HEADER: username + tier + market + SPY/VIX ---
     tier_icon = tier_display.get("icon", "🆓")
     tier_label = tier_display.get("label", "Starter (Free)")
-    st.success(f"🟢 Logged in as: **{st.session_state.username}**")
-    st.caption(f"{tier_icon} **{tier_label}** | Paper Trading Mode")
-    
-    # Upgrade Expander in Sidebar
+
+    engine = st.session_state.trading_engine
+    market = engine.is_market_open()
+
+    if market.get("is_open"):
+        market_line = f"🟢 Market Open • {market.get('current_time_et', '')} ET"
+    else:
+        market_line = f"🔴 Market Closed • {market.get('day_name', '')}"
+
+    # Compact user line
+    st.markdown(f"🟢 **{st.session_state.username}** • {tier_icon} {tier_label}")
+    st.caption(market_line)
+
+    # Compact SPY/VIX (one line each instead of st.metric)
+    try:
+        spy_data = yf.Ticker("SPY").history(period="1d")
+        vix_data = yf.Ticker("^VIX").history(period="1d")
+        if not spy_data.empty:
+            spy_price = spy_data['Close'].iloc[-1]
+            spy_open = spy_data['Open'].iloc[-1]
+            spy_change = ((spy_price - spy_open) / spy_open) * 100
+            spy_arrow = "📈" if spy_change >= 0 else "📉"
+            st.caption(f"SPY ${spy_price:.2f} {spy_arrow} {spy_change:+.2f}%")
+        if not vix_data.empty:
+            vix_val = vix_data['Close'].iloc[-1]
+            fear_level = "Extreme Fear" if vix_val > 25 else "Fear" if vix_val > 20 else "Calm"
+            vix_color = "🔴" if vix_val > 25 else "🟡" if vix_val > 20 else "🟢"
+            st.caption(f"VIX {vix_val:.1f} • {vix_color} {fear_level}")
+    except:
+        st.caption("Market data unavailable")
+
+    # VIX filter warning
+    if engine.settings.get("use_vix_filter", True) and ADVANCED_SIGNALS_AVAILABLE:
+        vix_result = engine.check_vix()
+        if not vix_result.get("safe_to_trade", True):
+            st.error(f"🛡️ VIX Filter: {vix_result.get('reason', 'VIX too high')}")
+
+    if st.button("🔄 Refresh", use_container_width=True):
+        st.rerun()
+
+    # --- UPGRADE EXPANDER ---
     with st.expander("⚡ Upgrade Plan"):
         db_upgrade = SessionLocal()
         current_sub = check_subscription(db_upgrade, st.session_state.username) if PAYMENTS_AVAILABLE else {"plan": "starter", "status": "inactive", "tier": "starter"}
@@ -602,8 +663,8 @@ with st.sidebar:
                     st.button("💎 Upgrade to Fund", use_container_width=True, disabled=True, key="sidebar_fund_btn")
             else:
                 st.success("✅ Current plan")
-                
-                        # ===== PAYMENT CHANGE: Check My Subscription button =====
+
+        # ===== PAYMENT CHANGE: Check My Subscription button =====
         st.markdown("---")
         st.markdown("##### 🔍 Subscription Status")
         if st.button("🔄 Check My Subscription", use_container_width=True, key="check_sub_btn"):
@@ -666,7 +727,7 @@ with st.sidebar:
                 st.dataframe(all_users, use_container_width=True, hide_index=True)
             db_upgrade.close()
 
-        # Admin Panel inside Upgrade Expander
+        # Admin Panel inside Upgrade Expander (duplicate from original)
         if user_tier == "admin" and TIERS_AVAILABLE:
             st.markdown("---")
             st.markdown("### 🔧 Admin Panel")
@@ -677,9 +738,9 @@ with st.sidebar:
                 with admin_col1:
                     st.markdown("#### Upgrade User")
                     upgrade_user_list = [u["username"] for u in all_users]
-                    target_user = st.selectbox("Select User", upgrade_user_list, key="admin_upgrade_user")
-                    upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan")
-                    if st.button("⬆️ Upgrade User", type="primary"):
+                    target_user = st.selectbox("Select User", upgrade_user_list, key="admin_upgrade_user_dup")
+                    upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan_dup")
+                    if st.button("⬆️ Upgrade User", type="primary", key="admin_upgrade_dup"):
                         success = upgrade_user(db_upgrade, target_user, upgrade_plan)
                         if success: st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!"); st.rerun()
                         else: st.error("Upgrade failed.")
@@ -687,8 +748,8 @@ with st.sidebar:
                     st.markdown("#### Downgrade User")
                     downgrade_user_list = [u["username"] for u in all_users if u.get("tier") != "starter"]
                     if downgrade_user_list:
-                        target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user")
-                        if st.button("⬇️ Downgrade to Starter"):
+                        target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user_dup")
+                        if st.button("⬇️ Downgrade to Starter", key="admin_down_dup"):
                             success = downgrade_user(db_upgrade, target_down_user)
                             if success: st.success(f"Successfully downgraded {target_down_user} to Starter!"); st.rerun()
                             else: st.error("Downgrade failed.")
@@ -698,44 +759,51 @@ with st.sidebar:
                 st.dataframe(all_users, use_container_width=True, hide_index=True)
             db_upgrade.close()
 
+    # === CHANGE 2: AI ASSISTANT EXPANDER ===
+    AI_SYSTEM_PROMPT = """You are the CascadeTrade Assistant, a helpful AI embedded in the CascadeTrade Terminal application.
+Your purpose is to answer questions about how the app works, the 3-bucket system (Dividend, Growth, Penny), the Alpaca brokerage, and general stock market concepts.
+
+Rules:
+- DO NOT give financial advice. You are an informational assistant only.
+- DO NOT discuss cryptocurrency or NFTs.
+- If asked "Should I buy AAPL?", respond with "I cannot give financial advice, but I can tell you how CascadeTrade would classify AAPL based on its dividend yield and price."
+- Be concise and friendly.
+- If you don't know something, say so honestly."""
+
+    with st.expander("💬 AI Assistant"):
+        # Check for OpenAI key
+        db_ai = SessionLocal()
+        current_user_ai = db_ai.query(User).filter(User.username == st.session_state.username).first()
+        openai_key = current_user_ai.openai_api_key if current_user_ai else ""
+        db_ai.close()
+
+        if not openai_key:
+            st.warning("Please add your OpenAI API key in ⚙️ Settings to use the AI Assistant.")
+            st.chat_input("Type a message...", disabled=True, key="ai_chat_input_disabled")
+        else:
+            # Display chat history
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            # Chat input
+            if prompt := st.chat_input("Ask about CascadeTrade...", key="ai_chat_input"):
+                # Add user message to history and display
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                # Get AI response
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        response = get_ai_response(prompt, AI_SYSTEM_PROMPT, openai_key)
+                    st.markdown(response)
+
+                # Add assistant response to history
+                st.session_state.messages.append({"role": "assistant", "content": response})
+    # === END CHANGE 2 ===
+
     st.caption("⚠️ Trading involves risk. Not financial advice.")
-    st.markdown("---")
-
-    # --- MARKET STATUS (Compact) ---
-    engine = st.session_state.trading_engine
-    market = engine.is_market_open()
-    if market.get("is_open"):
-        st.success(f"🟢 Market Open — {market.get('current_time_et', '')} ET")
-    else:
-        st.error(f"🔴 Market Closed — {market.get('day_name', '')}")
-
-    if st.button("🔄 Refresh", use_container_width=True):
-        st.rerun()
-
-    try:
-        spy_data = yf.Ticker("SPY").history(period="1d")
-        vix_data = yf.Ticker("^VIX").history(period="1d")
-        col_spy, col_vix = st.columns(2)
-        if not spy_data.empty:
-            spy_price = spy_data['Close'].iloc[-1]
-            spy_open = spy_data['Open'].iloc[-1]
-            spy_change = ((spy_price - spy_open) / spy_open) * 100
-            with col_spy:
-                st.metric("SPY", f"${spy_price:.2f}", f"{spy_change:.2f}%")
-        if not vix_data.empty:
-            vix_val = vix_data['Close'].iloc[-1]
-            fear_level = "Extreme Fear" if vix_val > 25 else "Fear" if vix_val > 20 else "Neutral"
-            vix_color = "🔴" if vix_val > 25 else "🟡" if vix_val > 20 else "🟢"
-            with col_vix:
-                st.metric("VIX", f"{vix_val:.1f}", f"{vix_color} {fear_level}")
-    except:
-        st.warning("Market data unavailable.")
-
-    if engine.settings.get("use_vix_filter", True) and ADVANCED_SIGNALS_AVAILABLE:
-        vix_result = engine.check_vix()
-        if not vix_result.get("safe_to_trade", True):
-            st.error(f"🛡️ VIX Filter: {vix_result.get('reason', 'VIX too high')}")
-
     st.markdown("---")
 
     # --- API & SETTINGS EXPANDER ---
@@ -814,7 +882,6 @@ with st.sidebar:
                     user_to_update.finnhub_api_key = new_finnhub
                 if new_finnhub:
                     os.environ["FINNHUB_API_KEY"] = new_finnhub
-                    # Also update the module-level variable in ipo_scanner
                     if IPO_SCANNER_AVAILABLE:
                         try:
                             from core import ipo_scanner
@@ -1040,9 +1107,7 @@ with tab1:
                         st.dataframe(div_data, use_container_width=True)
                     else: st.info("No upcoming ex-dividend dates found.")
 
-        # ============================================================
-        # MISSING FEATURE 1: Recent Dividends History Display
-        # ============================================================
+        # Recent Dividends History Display
         div_history = engine.get_dividend_history()
         if div_history:
             with st.expander("📋 Recent Dividends"):
@@ -1056,9 +1121,7 @@ with tab1:
         else:
             st.info("No dividend history yet. Click 'Check Dividends' to scan for dividends.")
 
-        # ============================================================
-        # MISSING FEATURE 2: Dividend Stock Comparison
-        # ============================================================
+        # Dividend Stock Comparison
         st.markdown("---")
         st.markdown("##### 📊 Dividend Stock Comparison")
         st.caption("Compare dividend yields and growth rates across your watchlist.")
@@ -1634,7 +1697,6 @@ with tab2:
 
         with col_scan2:
            if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
-                # Try database first, then environment variable
                 finnhub_key = ""
                 try:
                     db_finnhub = SessionLocal()
@@ -1826,7 +1888,7 @@ with tab3:
     # --- SUB-TAB 1: CONTROL ---
     with auto_sub1:
 
-        # --- ACCOUNT METRICS (Full width so numbers are readable) ---
+        # --- ACCOUNT METRICS ---
         st.markdown("##### 🔌 Connection & Account")
         
         if not engine.connected:
@@ -1843,7 +1905,7 @@ with tab3:
             else:
                 st.error(f"Account error: {account['error']}")
 
-        # --- CONNECT / RECONNECT + BOT CONTROL (Side by side, compact) ---
+        # --- CONNECT / RECONNECT + BOT CONTROL ---
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         
         with col_btn1:
@@ -1900,7 +1962,7 @@ with tab3:
                             st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells")
                         else: st.info("No signals found this scan.")
 
-        # --- Confirm Start Bot Warning (if needed, full width) ---
+        # --- Confirm Start Bot Warning ---
         if st.session_state.confirm_start_bot:
             st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
             confirm_c1, confirm_c2 = st.columns(2)
@@ -2359,7 +2421,7 @@ with tab3:
             dividend = engine.settings.get("dividend_settings", {})
             col_d1, col_d2, col_d3 = st.columns(3)
             with col_d1:
-                dividend_sl = st.slider("🛑 Stop Loss %", 1, 20, int(dividend.get("stop_loss_pct", 0.08) * 100), step=1, format="%d%%", key="dividend_sl")
+                dividend_sl = st.slider("🛡️ Stop Loss %", 1, 20, int(dividend.get("stop_loss_pct", 0.08) * 100), step=1, format="%d%%", key="dividend_sl")
                 dividend["stop_loss_pct"] = dividend_sl / 100
                 dividend_ts = st.slider("📈 Trailing Stop %", 1, 10, int(dividend.get("trailing_stop_pct", 0.05) * 100), step=1, format="%d%%", key="dividend_ts")
                 dividend["trailing_stop_pct"] = dividend_ts / 100
@@ -2476,8 +2538,7 @@ CascadeTrade starts in **Paper Trading** mode by default. This uses fake money b
 - **Penny % Allocation:** How much money goes to penny stocks. They are extremely high risk.
 
 **Why defaults are set to "safe trader" levels:**
-The default settings (Stop Loss 5%, Take Profit 10%, etc.) are designed to protect beginners from blowing up their accounts. They give
-give stocks room to breathe while locking in profits reliably.
+The default settings (Stop Loss 5%, Take Profit 10%, etc.) are designed to protect beginners from blowing up their accounts. They give stocks room to breathe while locking in profits reliably.
 
 **What happens if you increase risk (with real examples):**
 - **Stop Loss at 2%:** You buy a stock at $100. It drops to $98 (a normal bad day). The bot sells. It goes back up to $110 the next week. You missed the recovery because your stop was too tight.
@@ -2784,6 +2845,32 @@ These metrics are available in the Portfolio tab when you have enough trade hist
 - Paper trading uses fake money — you cannot lose real money
 - You can stop the bot at any time by clicking "Stop Bot"
 - You can manually scan once by clicking "Scan Once"
+""")
+
+    with st.expander("💬 AI Assistant"):
+        st.markdown("""
+**What is the AI Assistant?**
+The AI Assistant is a chatbot built into the sidebar of CascadeTrade Terminal. It can answer questions about:
+- How the 3-bucket system works
+- What each setting does
+- How signals and indicators work
+- General stock market concepts
+
+**How to use it:**
+1. Open the 💬 AI Assistant expander in the sidebar
+2. Type your question in the chat input
+3. The AI will respond with a helpful answer
+
+**Important rules:**
+- The AI does **NOT** give financial advice
+- The AI does **NOT** discuss cryptocurrency or NFTs
+- If you ask "Should I buy AAPL?", the AI will explain how CascadeTrade would classify it, but won't tell you to buy or sell
+- You need an OpenAI API key (set in ⚙️ Settings) to use the AI Assistant
+
+**Privacy:**
+- Your chat history is stored in your browser session only
+- Chat messages are sent to OpenAI for processing
+- No chat data is stored on CascadeTrade servers
 """)
 
     st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
