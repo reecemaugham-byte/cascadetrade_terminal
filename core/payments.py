@@ -278,7 +278,9 @@ def verify_and_process_payment(session_id: str, username: str) -> dict:
 
         # Get username from client_reference_id or metadata
         client_ref = getattr(session, 'client_reference_id', '') or ''
-        metadata = getattr(session, 'metadata', None) or {}
+        metadata_obj = getattr(session, 'metadata', None)
+        metadata = dict(metadata_obj) if metadata_obj else {}
+
 
         # Priority: client_reference_id > metadata.username > passed-in username
         if client_ref:
@@ -378,7 +380,9 @@ def verify_recent_payment_by_username(username: str) -> dict:
 
         for session in sessions.data:
             client_ref = getattr(session, 'client_reference_id', '') or ''
-            metadata = getattr(session, 'metadata', None) or {}
+            metadata_obj = getattr(session, 'metadata', None)
+            metadata = dict(metadata_obj) if metadata_obj else {}
+
             payment_status = getattr(session, 'payment_status', '') or ''
 
             if (client_ref == username or (metadata and metadata.get("username") == username)) and payment_status == "paid":
