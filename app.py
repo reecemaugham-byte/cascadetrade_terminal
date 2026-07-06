@@ -1910,25 +1910,19 @@ with tab3:
         # --- CONNECT / RECONNECT + BOT CONTROL ---
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         
-with col_btn1:
-    if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-        # Read keys DIRECTLY from sidebar inputs — NEVER from database
-        api_key = st.session_state.get("api_key_input", "")
-        secret_key = st.session_state.get("secret_key_input", "")
-
-        if not api_key or not secret_key:
-            st.error("Please enter your Alpaca API keys in the ⚙️ Settings sidebar first.")
-        else:
-            with st.spinner("Connecting to Alpaca Paper Trading..."):
-                result = engine.connect_with_keys(api_key, secret_key)
-
-                if result["success"]:
-                    st.success("✅ " + result["message"])
-                    if "account" in result:
-                        acct = result["account"]
-                        st.info(f"Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f} | Buying Power: ${acct['buying_power']:,.2f}")
+        with col_btn1:
+            if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
+                api_key = st.session_state.get("api_key_input", "")
+                secret_key = st.session_state.get("secret_key_input", "")
+                if not api_key or not secret_key:
+                    st.error("Enter your Alpaca API keys in the ⚙️ Settings sidebar, then click Connect.")
                 else:
-                    st.error(f"❌ {result['message']}")
+                    with st.spinner("Connecting to Alpaca..."):
+                        result = engine.connect_with_keys(api_key, secret_key)
+                        if result["success"]:
+                            st.success("✅ Connected to Alpaca Paper Trading!")
+                        else:
+                            st.error(f"❌ {result['message']}")
 
                     with st.expander("🔍 Connection Diagnostics"):
                         st.markdown("##### Common Issues:")
