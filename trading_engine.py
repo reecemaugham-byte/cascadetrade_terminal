@@ -1900,6 +1900,87 @@ class TradingEngine:
             return False
 
     # ==========================================
+    # DIRECT API KEY CONNECTION (NEW)
+    # ==========================================
+
+    def connect_with_keys(self, api_key: str, secret_key: str,
+                          base_url: str = 'https://paper-api.alpaca.markets') -> dict:
+        """Connect to Alpaca using raw API keys. Returns dict with success status and full details."""
+        # Strip whitespace (common copy-paste issue)
+        api_key = api_key.strip()
+        secret_key = secret_key.strip()
+
+        if not api_key or not secret_key:
+            self.connected = False
+            self.api = None
+            self.status_message = "Connection failed: API key or secret key is empty"
+            return {"success": False, "message": self.status_message}
+
+        # Detect if user has live keys but paper URL
+        if api_key.startswith("AK") and "paper-api" in base_url:
+            self.status_message = "Connection failed: You entered LIVE trading keys but connected to the PAPER trading URL. Use paper keys (starting with PK)."
+            self._log_error(self.status_message)
+            self.connected = False
+            return {"success": False, "message": self.status_message}
+
+        try:
+            import alpaca_trade_api as tradeapi
+            alpaca_api = tradeapi.REST(api_key, secret_key, base_url=base_url, api_version='v2')
+
+            # Test connection immediately
+            account = alpaca_api.get_account()
+
+            # Success! Store the connection
+            self.api = alpaca_api
+            self._alpaca_api_ref = alpaca_api
+            self.connected = True
+
+            today = datetime.now().date()
+            if self.daily_reset_date != today:
+                self.daily_pnl = 0.0
+                self.daily_start_equity = float(account.equity)
+                self.daily_reset_date = today
+
+            self.consecutive_failures = 0
+            self.status_message = f"Connected to Alpaca Paper Trading. Balance: ${float(account.buying_power):,.2f}"
+
+            return {
+                "success": True,
+                "message": self.status_message,
+                "account": {
+                    "cash": float(account.cash),
+                    "buying_power": float(account.buying_power),
+                    "equity": float(account.equity),
+                    "portfolio_value": float(account.portfolio_value),
+                    "status": account.status,
+                }
+            }
+        except Exception as e:
+            self.connected = False
+            self.api = None
+            full_error = str(e)
+            self.status_message = f"Connection failed: {full_error}"
+            self._log_error(f"connect_with_keys failed: {full_error}")
+
+            # Provide helpful error messages for common issues
+            if "401" in full_error or "Unauthorized" in full_error:
+                hint = "Your API keys are incorrect, or you're using LIVE keys with the PAPER trading URL."
+            elif "403" in full_error or "Forbidden" in full_error:
+                hint = "Your Alpaca account may not be approved yet. Check your email for verification."
+            elif "404" in full_error:
+                hint = "API endpoint not found. Check your Alpaca account status."
+            elif "ConnectionError" in full_error or "Max retries" in full_error:
+                hint = "Network error. Check your internet connection or firewall settings."
+            else:
+                hint = f"Raw error: {full_error}"
+
+            return {
+                "success": False,
+                "message": hint,
+                "error": full_error
+            }
+
+    # ==========================================
     # CONNECTION
     # ==========================================
 
@@ -1921,25 +2002,28 @@ class TradingEngine:
             return False
         return self._test_connection()
 
-    def _test_connection(self):
-        if self.api is None:
-            self.connected = False
-            return False
-        try:
-            account = self.api.get_account()
-            self.connected = True
-            today = datetime.now().date()
-            if self.daily_reset_date != today:
-                self.daily_pnl = 0.0
-                self.daily_start_equity = float(account.equity)
-                self.daily_reset_date = today
-            self.consecutive_failures = 0
-            self.status_message = f"Connected. Paper balance: ${float(account.buying_power):,.2f}"
-            return True
-        except Exception as e:
-            self.connected = False
-            self._log_error(f"Connection test failed: {str(e)[:80]}")
-            return False
+def _test_connection(self):
+    if self.api is None:
+        self.connected = False
+        self.status_message = "No API connection available."
+        return False
+    try:
+        account = self.api.get_account()
+        self.connected = True
+        today = datetime.now().date()
+        if self.daily_reset_date != today:
+            self.daily_pnl = 0.0
+            self.daily_start_equity = float(account.equity)
+            self.daily_reset_date = today
+        self.consecutive_failures = 0
+        self.status_message = f"Connected. Paper balance: ${float(account.buying_power):,.2f}"
+        return True
+    except Exception as e:
+        self.connected = False
+        full_error = str(e)
+        self.status_message = f"Connection failed: {full_error}"
+        self._log_error(f"Connection test failed: {full_error}")
+        return False
 
     def _reconnect(self):
         if self._alpaca_api_ref is None:
