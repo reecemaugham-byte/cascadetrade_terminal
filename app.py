@@ -828,9 +828,15 @@ Rules:
         current_secret = ""
 
         st.markdown("---")
-        new_key = st.text_input("Alpaca API Key", value=current_key, type="password", key="api_key_input")
-        st.caption("🔒 Your keys are encrypted at rest.")
-        new_secret = st.text_input("Alpaca Secret Key", value=current_secret, type="password", key="secret_key_input")
+         # Read from session_state first (persists across reruns), then from database
+        saved_key = st.session_state.get("alpaca_api_key", current_key)
+        saved_secret = st.session_state.get("alpaca_secret_key", current_secret)
+        new_key = st.text_input("Alpaca API Key", value=saved_key, type="password", key="api_key_input")
+        st.caption("🔒 Keys stay in your browser only — never stored on our servers.")
+        new_secret = st.text_input("Alpaca Secret Key", value=saved_secret, type="password", key="secret_key_input")
+        # Save to session state so they persist across reruns
+        st.session_state["alpaca_api_key"] = new_key
+        st.session_state["alpaca_secret_key"] = new_secret
 
         st.markdown("---")
         st.markdown("##### 📡 Discord Webhooks")
@@ -1960,7 +1966,6 @@ with tab3:
                 if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
                     engine.stop()
                     st.success("Bot stopped.")
-                    st.rerun()
             else:
                 if st.session_state.confirm_start_bot:
                     if st.button("✅ Confirm Start", type="primary", use_container_width=True):
@@ -1972,10 +1977,15 @@ with tab3:
                         st.rerun()
                 else:
                     if st.button("▶️ Start Bot", use_container_width=True):
-                        if not engine.connected: st.error("Connect to Alpaca first!")
+                        if not engine.connected:
+                            st.error("Connect to Alpaca first!")
                         else:
-                            st.session_state.confirm_start_bot = True
-                            st.rerun()
+                            started = engine.start()
+                            if started:
+                                st.success("🟢 Bot started!")
+                            else:
+                                st.error(f"Failed to start: {engine.status_message}")
+
 
         with col_btn3:
             if st.button("🔍 Scan Once", use_container_width=True):
@@ -1991,20 +2001,19 @@ with tab3:
 
         # --- Confirm Start Bot Warning ---
         if st.session_state.confirm_start_bot:
-            st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
+            st.warning("⚠️ Are you sure you want to start auto-trading?...")
             confirm_c1, confirm_c2 = st.columns(2)
             with confirm_c1:
                 if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
                     st.session_state.confirm_start_bot = False
-                    engine.start()
-                    market = engine.is_market_open()
-                    if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
-                    else: st.success("Bot started!")
-                    st.rerun()
+                    started = engine.start()
+                    if started:
+                        st.success("🟢 Bot started!")
+                    else:
+                        st.error(f"Failed to start: {engine.status_message}")
             with confirm_c2:
                 if st.button("❌ Cancel", use_container_width=True):
                     st.session_state.confirm_start_bot = False
-                    st.rerun()
 
         status = engine.get_status()
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
