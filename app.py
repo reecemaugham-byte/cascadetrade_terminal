@@ -828,11 +828,9 @@ Rules:
         current_secret = ""
 
         st.markdown("---")
-        new_key = st.text_input("Alpaca API Key", value=st.session_state.get("alpaca_api_key", ""), type="password", key="api_key_input")
+        new_key = st.text_input("Alpaca API Key", type="password", key="api_key_input")
         st.caption("🔒 Keys stay in your browser only — never stored on our servers.")
-        new_secret = st.text_input("Alpaca Secret Key", value=st.session_state.get("alpaca_secret_key", ""), type="password", key="secret_key_input")
-        st.session_state["alpaca_api_key"] = new_key
-        st.session_state["alpaca_secret_key"] = new_secret
+        new_secret = st.text_input("Alpaca Secret Key", type="password", key="secret_key_input")
 
         st.markdown("---")
         st.markdown("##### 📡 Discord Webhooks")
@@ -1914,8 +1912,8 @@ with tab3:
         
         with col_btn1:
             if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-                api_key = st.session_state.get("alpaca_api_key", "")
-                secret_key = st.session_state.get("alpaca_secret_key", "")
+                api_key = st.session_state.get("api_key_input", "")
+                secret_key = st.session_state.get("secret_key_input", "")
                 if not api_key or not secret_key:
                     st.error("Please enter your Alpaca API keys in the Settings sidebar.")
                 else:
