@@ -96,16 +96,9 @@ try:
 except Exception:
     PEXELS_API_KEY = ""
 
-try:
-    ALPACA_API_KEY = ""
-    ALPACA_SECRET_KEY = ""
-    ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
-    if tradeapi:
-        alpaca_api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
-    else:
-        alpaca_api = None
-except Exception:
-    alpaca_api = None
+# Alpaca connection is handled per-user via connect_with_keys()
+# No global API object — each user connects with their own keys
+alpaca_api = None
 
 try:
     TAVILY_API_KEY = st.secrets["TAVILY_API_KEY"]
