@@ -2002,28 +2002,28 @@ class TradingEngine:
             return False
         return self._test_connection()
 
-def _test_connection(self):
-    if self.api is None:
-        self.connected = False
-        self.status_message = "No API connection available."
-        return False
-    try:
-        account = self.api.get_account()
-        self.connected = True
-        today = datetime.now().date()
-        if self.daily_reset_date != today:
-            self.daily_pnl = 0.0
-            self.daily_start_equity = float(account.equity)
-            self.daily_reset_date = today
-        self.consecutive_failures = 0
-        self.status_message = f"Connected. Paper balance: ${float(account.buying_power):,.2f}"
-        return True
-    except Exception as e:
-        self.connected = False
-        full_error = str(e)
-        self.status_message = f"Connection failed: {full_error}"
-        self._log_error(f"Connection test failed: {full_error}")
-        return False
+    def _test_connection(self):
+        if self.api is None:
+            self.connected = False
+            self.status_message = "No API connection available."
+            return False
+        try:
+            account = self.api.get_account()
+            self.connected = True
+            today = datetime.now().date()
+            if self.daily_reset_date != today:
+                self.daily_pnl = 0.0
+                self.daily_start_equity = float(account.equity)
+                self.daily_reset_date = today
+            self.consecutive_failures = 0
+            self.status_message = f"Connected. Paper balance: ${float(account.buying_power):,.2f}"
+            return True
+        except Exception as e:
+            self.connected = False
+            full_error = str(e)
+            self.status_message = f"Connection failed: {full_error}"
+            self._log_error(f"Connection test failed: {full_error}")
+            return False
 
     def _reconnect(self):
         if self._alpaca_api_ref is None:
@@ -2035,7 +2035,8 @@ def _test_connection(self):
             delay = min(self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), self.MAX_RECONNECT_DELAY)
             self.status_message = f"Reconnecting... attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}"
             self._log_error(f"Reconnect attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}, waiting {delay}s")
-            if self._stop_event.wait(delay): return False
+            if self._stop_event.wait(delay):
+                return False
             try:
                 from utils import alpaca_api
                 self._alpaca_api_ref = alpaca_api
@@ -2048,21 +2049,6 @@ def _test_connection(self):
                 return True
         self.status_message = f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts."
         return False
-
-    def _check_and_reset_daily(self):
-        today = datetime.now().date()
-        if self.daily_reset_date is None or self.daily_reset_date != today:
-            old_date = self.daily_reset_date
-            self.daily_reset_date = today
-            self.daily_pnl = 0.0
-            if old_date is not None:
-                self._log_error(f"Daily reset: {old_date} → {today}.")
-            try:
-                if self.connected and self.api:
-                    account = self.api.get_account()
-                    self.daily_start_equity = float(account.equity)
-            except Exception as e:
-                self._log_error(f"Could not fetch equity for daily reset: {str(e)[:60]}")
 
     # ==========================================
     # MARKET HOURS
