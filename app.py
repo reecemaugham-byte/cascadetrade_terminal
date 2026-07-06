@@ -1908,25 +1908,65 @@ with tab3:
         # --- CONNECT / RECONNECT + BOT CONTROL ---
         col_btn1, col_btn2, col_btn3 = st.columns(3)
         
-        with col_btn1:
-            if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-                db = SessionLocal()
-                current_user = db.query(User).filter(User.username == st.session_state.username).first()
-                api_key = current_user.alpaca_api_key if current_user else ""
-                secret_key = current_user.alpaca_secret_key if current_user else ""
-                db.close()
-                if not api_key or not secret_key:
-                    st.error("Please enter your Alpaca API keys in the Settings sidebar.")
+with col_btn1:
+    if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
+        db = SessionLocal()
+        current_user = db.query(User).filter(User.username == st.session_state.username).first()
+        api_key = current_user.alpaca_api_key if current_user else ""
+        secret_key = current_user.alpaca_secret_key if current_user else ""
+        db.close()
+        
+        if not api_key or not secret_key:
+            st.error("Please enter your Alpaca API keys in the ⚙️ Settings sidebar first.")
+        else:
+            with st.spinner("Connecting to Alpaca Paper Trading..."):
+                result = engine.connect_with_keys(api_key, secret_key)
+                
+                if result["success"]:
+                    st.success("✅ " + result["message"])
+                    if "account" in result:
+                        acct = result["account"]
+                        st.info(f"Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f} | Buying Power: ${acct['buying_power']:,.2f}")
                 else:
-                    with st.spinner("Connecting to Alpaca..."):
-                        try:
-                            import alpaca_trade_api as tradeapi
-                            alpaca_api = tradeapi.REST(api_key, secret_key, base_url='https://paper-api.alpaca.markets', api_version='v2')
-                            success = engine.connect(alpaca_api)
-                            if success: st.success("Connected to Alpaca Paper Trading!")
-                            else: st.error(f"Connection failed: {engine.status_message}")
-                        except Exception as e: st.error(f"Error initializing Alpaca: {e}")
-                    st.rerun()
+                    st.error(f"❌ {result['message']}")
+                    
+                    # Show diagnostic details in an expander
+                    with st.expander("🔍 Connection Diagnostics"):
+                        st.markdown("##### Common Issues:")
+                        st.markdown("""
+                        - **Wrong keys for paper trading:** Paper keys start with `PK`. Live keys start with `AK`. Make sure you're using paper trading keys.
+                        - **Account not approved:** New Alpaca accounts need email verification. Check your inbox.
+                        - **Extra spaces:** Keys sometimes get trailing spaces or newlines when copy-pasted. Try pasting again carefully.
+                        - **Wrong URL:** Paper trading needs `https://paper-api.alpaca.markets`
+                        """)
+                        
+                        st.markdown("##### Key Check:")
+                        st.write(f"API Key starts with: **{api_key[:3]}...{api_key[-3:]}** ({len(api_key)} characters)")
+                        st.write(f"Secret Key starts with: **{secret_key[:3]}...{secret_key[-3:]}** ({len(secret_key)} characters)")
+                        
+                        if api_key.startswith("AK"):
+                            st.error("⚠️ Your API key starts with 'AK' which is a **LIVE** trading key. Paper trading keys start with 'PK'. Go to your [Alpaca Paper Dashboard](https://app.alpaca.markets/paper/dashboard/overview) to generate paper trading keys.")
+                        elif api_key.startswith("PK"):
+                            st.success("✅ Your API key starts with 'PK' — this looks like a paper trading key.")
+                        else:
+                            st.warning(f"⚠️ Your API key starts with '{api_key[:2]}' which doesn't match the expected format. Alpaca paper keys start with 'PK'.")
+                        
+                        if "error" in result:
+                            st.markdown("##### Raw Error:")
+                            st.code(result["error"])
+                        
+                        st.markdown("##### Steps to Fix:")
+                        st.markdown("""
+                        1. Go to [Alpaca Markets](https://app.alpaca.markets)
+                        2. Switch to your **Paper Trading** dashboard
+                        3. Go to **App Settings → API Keys**
+                        4. Delete old keys and generate new ones
+                        5. Copy BOTH the Key and Secret
+                        6. Paste them into the ⚙️ Settings sidebar
+                        7. Click **Save All Settings**
+                        8. Click **Connect**
+                        """)
+            st.rerun()
 
         with col_btn2:
             if engine.running:
