@@ -812,20 +812,20 @@ Rules:
         db = SessionLocal()
         current_user = db.query(User).filter(User.username == st.session_state.username).first()
         if current_user:
-            current_key = current_user.alpaca_api_key if current_user.alpaca_api_key else ""
-            current_secret = current_user.alpaca_secret_key if current_user.alpaca_secret_key else ""
-            current_webhook = current_user.discord_webhook_url if current_user.discord_webhook_url else ""
-            current_webhook_daily = current_user.discord_webhook_url_daily if current_user.discord_webhook_url_daily else ""
-            current_openai = current_user.openai_api_key if current_user.openai_api_key else ""
+            current_webhook = current_user.discord_webhook_url if hasattr(current_user, 'discord_webhook_url') and current_user.discord_webhook_url else ""
+            current_webhook_daily = current_user.discord_webhook_url_daily if hasattr(current_user, 'discord_webhook_url_daily') and current_user.discord_webhook_url_daily else ""
+            current_openai = current_user.openai_api_key if hasattr(current_user, 'openai_api_key') and current_user.openai_api_key else ""
             current_finnhub = current_user.finnhub_api_key if hasattr(current_user, 'finnhub_api_key') and current_user.finnhub_api_key else ""
         else:
-            current_key = ""
-            current_secret = ""
             current_webhook = ""
             current_webhook_daily = ""
             current_openai = ""
             current_finnhub = ""
         db.close()
+
+        # Alpaca keys are NEVER loaded from database — session only for security
+        current_key = ""
+        current_secret = ""
 
         st.markdown("---")
         new_key = st.text_input("Alpaca API Key", value=current_key, type="password", key="api_key_input")
@@ -872,12 +872,16 @@ Rules:
             db = SessionLocal()
             user_to_update = db.query(User).filter(User.username == st.session_state.username).first()
             if user_to_update:
-                user_to_update.alpaca_api_key = new_key
-                user_to_update.alpaca_secret_key = new_secret
-                user_to_update.discord_webhook_url = new_webhook
-                user_to_update.discord_webhook_url_daily = new_webhook_daily
-                user_to_update.openai_api_key = new_openai
-                user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
+                # Alpaca keys are NOT saved to database — session only for security
+                # They're used directly from sidebar inputs when clicking Connect
+                if hasattr(user_to_update, 'discord_webhook_url'):
+                    user_to_update.discord_webhook_url = new_webhook
+                if hasattr(user_to_update, 'discord_webhook_url_daily'):
+                    user_to_update.discord_webhook_url_daily = new_webhook_daily
+                if hasattr(user_to_update, 'openai_api_key'):
+                    user_to_update.openai_api_key = new_openai
+                if hasattr(user_to_update, 'profit_skim_pct'):
+                    user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
                 if hasattr(user_to_update, 'finnhub_api_key'):
                     user_to_update.finnhub_api_key = new_finnhub
                 if new_finnhub:
@@ -889,11 +893,10 @@ Rules:
                         except Exception:
                             pass
                 db.commit()
-                st.success("All settings saved securely!")
+                st.success("Settings saved! (Alpaca keys stay in your browser only — never stored on our servers)")
             else:
                 st.error("User not found.")
             db.close()
-            st.session_state.trading_engine.connected = False
 
         with st.columns(2)[1]:
             if st.button("🔔 Test Discord", use_container_width=True):
@@ -915,7 +918,6 @@ Rules:
         st.session_state.username = None
         st.session_state.needs_onboarding = False
         st.session_state.onboarding_step = 1
-        st.rerun()
 
 # ==========================================
 # 4b. MAIN LAYOUT (4 Tabs)
@@ -1910,18 +1912,16 @@ with tab3:
         
 with col_btn1:
     if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-        db = SessionLocal()
-        current_user = db.query(User).filter(User.username == st.session_state.username).first()
-        api_key = current_user.alpaca_api_key if current_user else ""
-        secret_key = current_user.alpaca_secret_key if current_user else ""
-        db.close()
-        
+        # Read keys DIRECTLY from sidebar inputs — NEVER from database
+        api_key = st.session_state.get("api_key_input", "")
+        secret_key = st.session_state.get("secret_key_input", "")
+
         if not api_key or not secret_key:
             st.error("Please enter your Alpaca API keys in the ⚙️ Settings sidebar first.")
         else:
             with st.spinner("Connecting to Alpaca Paper Trading..."):
                 result = engine.connect_with_keys(api_key, secret_key)
-                
+
                 if result["success"]:
                     st.success("✅ " + result["message"])
                     if "account" in result:
@@ -1929,44 +1929,37 @@ with col_btn1:
                         st.info(f"Portfolio: ${acct['portfolio_value']:,.2f} | Cash: ${acct['cash']:,.2f} | Buying Power: ${acct['buying_power']:,.2f}")
                 else:
                     st.error(f"❌ {result['message']}")
-                    
-                    # Show diagnostic details in an expander
+
                     with st.expander("🔍 Connection Diagnostics"):
                         st.markdown("##### Common Issues:")
                         st.markdown("""
-                        - **Wrong keys for paper trading:** Paper keys start with `PK`. Live keys start with `AK`. Make sure you're using paper trading keys.
-                        - **Account not approved:** New Alpaca accounts need email verification. Check your inbox.
-                        - **Extra spaces:** Keys sometimes get trailing spaces or newlines when copy-pasted. Try pasting again carefully.
-                        - **Wrong URL:** Paper trading needs `https://paper-api.alpaca.markets`
+                        - **Wrong keys for paper trading:** Paper keys start with `PK`. Live keys start with `AK`.
+                        - **Account not approved:** New Alpaca accounts need email verification.
+                        - **Extra spaces:** Keys sometimes get trailing spaces when copy-pasted.
                         """)
-                        
                         st.markdown("##### Key Check:")
-                        st.write(f"API Key starts with: **{api_key[:3]}...{api_key[-3:]}** ({len(api_key)} characters)")
-                        st.write(f"Secret Key starts with: **{secret_key[:3]}...{secret_key[-3:]}** ({len(secret_key)} characters)")
-                        
+                        st.write(f"API Key: **{api_key[:3]}...{api_key[-3:]}** ({len(api_key)} characters)")
+                        st.write(f"Secret Key: **{secret_key[:3]}...{secret_key[-3:]}** ({len(secret_key)} characters)")
                         if api_key.startswith("AK"):
-                            st.error("⚠️ Your API key starts with 'AK' which is a **LIVE** trading key. Paper trading keys start with 'PK'. Go to your [Alpaca Paper Dashboard](https://app.alpaca.markets/paper/dashboard/overview) to generate paper trading keys.")
+                            st.error("⚠️ Your API key starts with 'AK' — that's a **LIVE** key. Paper keys start with 'PK'.")
                         elif api_key.startswith("PK"):
-                            st.success("✅ Your API key starts with 'PK' — this looks like a paper trading key.")
+                            st.success("✅ Key format looks correct (starts with 'PK' = paper trading)")
                         else:
-                            st.warning(f"⚠️ Your API key starts with '{api_key[:2]}' which doesn't match the expected format. Alpaca paper keys start with 'PK'.")
-                        
+                            st.warning(f"⚠️ Key starts with '{api_key[:2]}' — Alpaca paper keys start with 'PK'")
                         if "error" in result:
-                            st.markdown("##### Raw Error:")
+                            st.markdown("##### Raw Error from Alpaca:")
                             st.code(result["error"])
-                        
-                        st.markdown("##### Steps to Fix:")
+
+                        st.markdown("##### Fix Steps:")
                         st.markdown("""
                         1. Go to [Alpaca Markets](https://app.alpaca.markets)
-                        2. Switch to your **Paper Trading** dashboard
+                        2. Switch to **Paper Trading** dashboard
                         3. Go to **App Settings → API Keys**
-                        4. Delete old keys and generate new ones
+                        4. Generate new keys
                         5. Copy BOTH the Key and Secret
                         6. Paste them into the ⚙️ Settings sidebar
-                        7. Click **Save All Settings**
-                        8. Click **Connect**
+                        7. Click **Connect** (no need to save first)
                         """)
-            st.rerun()
 
         with col_btn2:
             if engine.running:
