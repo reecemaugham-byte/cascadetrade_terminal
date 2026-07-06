@@ -828,9 +828,6 @@ Rules:
         current_secret = ""
 
         st.markdown("---")
-         # Read from session_state first (persists across reruns), then from database
-        saved_key = st.session_state.get("alpaca_api_key", current_key)
-        saved_secret = st.session_state.get("alpaca_secret_key", current_secret)
         new_key = st.text_input("Alpaca API Key", value=st.session_state.get("alpaca_api_key", ""), type="password", key="api_key_input")
         st.caption("🔒 Keys stay in your browser only — never stored on our servers.")
         new_secret = st.text_input("Alpaca Secret Key", value=st.session_state.get("alpaca_secret_key", ""), type="password", key="secret_key_input")
@@ -1935,42 +1932,12 @@ with tab3:
                             st.error(f"Error initializing Alpaca: {e}")
                 st.rerun()
 
-    with st.expander("🔍 Connection Diagnostics"):
-        st.markdown("##### Common Issues:")
-        st.markdown("""
-        - **Wrong keys for paper trading:** Paper keys start with `PK`. Live keys start with `AK`.
-        - **Account not approved:** New Alpaca accounts need email verification.
-        - **Extra spaces:** Keys sometimes get trailing spaces when copy-pasted.
-        """)
-        st.markdown("##### Key Check:")
-        st.write(f"API Key: **{api_key[:3]}...{api_key[-3:]}** ({len(api_key)} characters)")
-        st.write(f"Secret Key: **{secret_key[:3]}...{secret_key[-3:]}** ({len(secret_key)} characters)")
-        if api_key.startswith("AK"):
-            st.error("⚠️ Your API key starts with 'AK' — that's a **LIVE** key. Paper keys start with 'PK'.")
-        elif api_key.startswith("PK"):
-            st.success("✅ Key format looks correct (starts with 'PK' = paper trading)")
-        else:
-            st.warning(f"⚠️ Key starts with '{api_key[:2]}' — Alpaca paper keys start with 'PK'")
-        if "error" in result:
-            st.markdown("##### Raw Error from Alpaca:")
-            st.code(result["error"])
-
-        st.markdown("##### Fix Steps:")
-        st.markdown("""
-        1. Go to [Alpaca Markets](https://app.alpaca.markets)
-        2. Switch to **Paper Trading** dashboard
-        3. Go to **App Settings → API Keys**
-        4. Generate new keys
-        5. Copy BOTH the Key and Secret
-        6. Paste them into the ⚙️ Settings sidebar
-        7. Click **Connect** (no need to save first)
-        """)
-
         with col_btn2:
             if engine.running:
                 if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
                     engine.stop()
                     st.success("Bot stopped.")
+                    st.rerun()
             else:
                 if st.session_state.confirm_start_bot:
                     if st.button("✅ Confirm Start", type="primary", use_container_width=True):
@@ -1982,15 +1949,10 @@ with tab3:
                         st.rerun()
                 else:
                     if st.button("▶️ Start Bot", use_container_width=True):
-                        if not engine.connected:
-                            st.error("Connect to Alpaca first!")
+                        if not engine.connected: st.error("Connect to Alpaca first!")
                         else:
-                            started = engine.start()
-                            if started:
-                                st.success("🟢 Bot started!")
-                            else:
-                                st.error(f"Failed to start: {engine.status_message}")
-
+                            st.session_state.confirm_start_bot = True
+                            st.rerun()
 
         with col_btn3:
             if st.button("🔍 Scan Once", use_container_width=True):
@@ -2006,19 +1968,20 @@ with tab3:
 
         # --- Confirm Start Bot Warning ---
         if st.session_state.confirm_start_bot:
-            st.warning("⚠️ Are you sure you want to start auto-trading?...")
+            st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
             confirm_c1, confirm_c2 = st.columns(2)
             with confirm_c1:
                 if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
                     st.session_state.confirm_start_bot = False
-                    started = engine.start()
-                    if started:
-                        st.success("🟢 Bot started!")
-                    else:
-                        st.error(f"Failed to start: {engine.status_message}")
+                    engine.start()
+                    market = engine.is_market_open()
+                    if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
+                    else: st.success("Bot started!")
+                    st.rerun()
             with confirm_c2:
                 if st.button("❌ Cancel", use_container_width=True):
                     st.session_state.confirm_start_bot = False
+                    st.rerun()
 
         status = engine.get_status()
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
