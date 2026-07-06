@@ -2035,15 +2035,9 @@ class TradingEngine:
             delay = min(self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), self.MAX_RECONNECT_DELAY)
             self.status_message = f"Reconnecting... attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}"
             self._log_error(f"Reconnect attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}, waiting {delay}s")
-            if self._stop_event.wait(delay):
-                return False
-            try:
-                from utils import alpaca_api
-                self._alpaca_api_ref = alpaca_api
-                self.api = alpaca_api
-            except Exception as e:
-                self._log_error(f"Failed to import alpaca_api: {str(e)[:60]}")
-                continue
+            if self._stop_event.wait(delay): return False
+            # Use stored API reference — do NOT import from utils (it's None)
+            self.api = self._alpaca_api_ref
             if self._test_connection():
                 self.consecutive_failures = 0
                 return True
