@@ -306,6 +306,9 @@ class TradingEngine:
         self._sector_cache = {}
         self._price_cache = {}
         self._price_cache_time = 0
+        self._data_cache = {}
+        self._data_cache_time = {}
+        self._data_cache_ttl = 300  # 5 minutes
         self._daily_start_equity = 0.0
         self._trailing_stops = {}
         self._alpaca_api_ref = None
@@ -962,9 +965,18 @@ class TradingEngine:
             self.status_message = "No watchlist configured"
             return
 
-        batch_data = self._batch_fetch_data(watchlist)
+        # Stagger scanning for large watchlists — scan a portion each cycle
+        max_per_cycle = 50
+        if len(watchlist) > max_per_cycle:
+            cycle_offset = (self.cycle_count * max_per_cycle) % len(watchlist)
+            scan_slice = watchlist[cycle_offset:cycle_offset + max_per_cycle]
+            self.status_message = f"Scanning {len(scan_slice)}/{len(watchlist)} stocks (cycle {self.cycle_count})"
+        else:
+            scan_slice = watchlist
 
-        for symbol in watchlist:
+        batch_data = self._batch_fetch_data(scan_slice)
+
+        for symbol in scan_slice:
             try:
                 df = batch_data.get(symbol)
                 if df is None or df.empty or len(df) < 20:
@@ -1211,13 +1223,31 @@ class TradingEngine:
     # ==========================================
 
     def _batch_fetch_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
-        """Batch fetch historical data for multiple symbols with retry logic."""
+        """Batch fetch historical data for multiple symbols with caching and retry logic."""
         result = {}
         failed_symbols = []
         chunk_size = 50
+        now = time.time()
+        cache_hits = 0
+        fetch_count = 0
 
-        for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i:i + chunk_size]
+        # Check cache first
+        for symbol in list(symbols):
+            if symbol in self._data_cache and symbol in self._data_cache_time:
+                cache_age = now - self._data_cache_time[symbol]
+                if cache_age < self._data_cache_ttl:
+                    result[symbol] = self._data_cache[symbol]
+                    cache_hits += 1
+
+        # If all symbols are cached, return immediately
+        if len(result) == len(symbols):
+            return result
+
+        # Only fetch symbols not in cache
+        symbols_to_fetch = [s for s in symbols if s not in result]
+
+        for i in range(0, len(symbols_to_fetch), chunk_size):
+            chunk = symbols_to_fetch[i:i + chunk_size]
             try:
                 if len(chunk) > 1:
                     ticker_str = " ".join(chunk)
@@ -1235,6 +1265,9 @@ class TradingEngine:
                             sym_df.dropna(subset=['close'], inplace=True)
                             if not sym_df.empty and len(sym_df) >= 20:
                                 result[symbol] = sym_df
+                                self._data_cache[symbol] = sym_df
+                                self._data_cache_time[symbol] = now
+                                fetch_count += 1
                             else:
                                 failed_symbols.append(symbol)
                         except Exception:
@@ -1248,6 +1281,9 @@ class TradingEngine:
                             if 'adj_close' in df.columns:
                                 df = df.drop(columns=['adj_close'])
                             result[symbol] = df
+                            self._data_cache[symbol] = df
+                            self._data_cache_time[symbol] = now
+                            fetch_count += 1
                         else:
                             failed_symbols.append(symbol)
                     except Exception:
@@ -1255,9 +1291,9 @@ class TradingEngine:
             except Exception:
                 failed_symbols.extend(chunk)
 
-        # Retry failed symbols individually
-        if failed_symbols:
-            for symbol in failed_symbols:
+        # Retry failed symbols individually (max 10 retries)
+        if failed_symbols and len(failed_symbols) <= 10:
+            for symbol in failed_symbols[:10]:
                 if symbol not in result:
                     try:
                         df = yf.Ticker(symbol).history(period="3mo")
@@ -1266,8 +1302,17 @@ class TradingEngine:
                             if 'adj_close' in df.columns:
                                 df = df.drop(columns=['adj_close'])
                             result[symbol] = df
+                            self._data_cache[symbol] = df
+                            self._data_cache_time[symbol] = now
                     except Exception:
                         pass
+
+        # Clean old cache entries (keep only last 500 stocks)
+        if len(self._data_cache) > 500:
+            oldest_keys = sorted(self._data_cache_time, key=self._data_cache_time.get)[:100]
+            for key in oldest_keys:
+                self._data_cache.pop(key, None)
+                self._data_cache_time.pop(key, None)
 
         return result
 
