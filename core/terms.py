@@ -6,34 +6,34 @@ All text stored here so it can be updated in one place.
 """
 
 TERMS_OF_SERVICE = """
-CascadeTrade Terminal — Terms of Service
+Roleigh QuanTrader — Terms of Service
 
 Last updated: June 2026
 
-By creating an account and using CascadeTrade Terminal ("the Service"), you agree to the following terms.
+By creating an account and using Roleigh QuanTrader ("the Service"), you agree to the following terms.
 
 1. DESCRIPTION OF SERVICE
 
-CascadeTrade Terminal is automated trading software that connects to your Alpaca brokerage account via API keys. The Service analyses market data and generates trading signals which can be executed automatically or manually.
+Roleigh QuanTrader is automated trading software that connects to your Alpaca brokerage account via API keys. The Service analyses market data and generates trading signals which can be executed automatically or manually.
 
-CascadeTrade Terminal is SOFTWARE. It is NOT a financial advisor, investment advisor, broker-dealer, or any form of regulated financial service.
+Roleigh QuanTrader is SOFTWARE. It is NOT a financial advisor, investment advisor, broker-dealer, or any form of regulated financial service.
 
 2. YOUR ACCOUNTS
 
 2.1 Alpaca Account
-You are responsible for creating and maintaining your own Alpaca brokerage account. CascadeTrade Terminal does not open, manage, or hold your Alpaca account. All trading funds are held by Alpaca Securities LLC, a FINRA-registered broker-dealer and SIPC member.
+You are responsible for creating and maintaining your own Alpaca brokerage account. Roleigh QuanTrader does not open, manage, or hold your Alpaca account. All trading funds are held by Alpaca Securities LLC, a FINRA-registered broker-dealer and SIPC member.
 
 2.2 API Keys
-You provide your Alpaca API keys to CascadeTrade Terminal so the software can execute trades on your behalf. Your API keys are encrypted at rest in our database. You may revoke your API keys at any time through your Alpaca dashboard, which immediately disconnects CascadeTrade Terminal from your account.
+You provide your Alpaca API keys to Roleigh QuanTrader so the software can execute trades on your behalf. Your API keys are encrypted at rest in our database. You may revoke your API keys at any time through your Alpaca dashboard, which immediately disconnects Roleigh QuanTrader from your account.
 
 2.3 OpenAI Account (Optional)
-If you choose to use AI sentiment analysis, you must create your own OpenAI account and provide your own API key. CascadeTrade Terminal does not access, store, or manage your OpenAI billing.
+If you choose to use AI sentiment analysis, you must create your own OpenAI account and provide your own API key. Roleigh QuanTrader does not access, store, or manage your OpenAI billing.
 
 2.4 Discord (Optional)
-If you choose to receive trade alerts via Discord, you must create your own Discord server and webhook. CascadeTrade Terminal sends messages to your webhook URL only.
+If you choose to receive trade alerts via Discord, you must create your own Discord server and webhook. Roleigh QuanTrader sends messages to your webhook URL only.
 
 2.5 Finnhub Account (Optional)
-If you choose to use the IPO & New Listings scanner, you may provide your own Finnhub API key. CascadeTrade Terminal uses it to fetch upcoming IPO data. CascadeTrade Terminal does not access, store, or manage your Finnhub billing.
+If you choose to use the IPO & New Listings scanner, you may provide your own Finnhub API key. Roleigh QuanTrader uses it to fetch upcoming IPO data. Roleigh QuanTrader does not access, store, or manage your Finnhub billing.
 
 3. TRADING RISKS
 
@@ -44,21 +44,21 @@ Paper trading uses simulated money with real market data. Paper trading results 
 Trading stocks involves SIGNIFICANT RISK OF LOSS. You could lose some or all of your invested capital. Past performance does not guarantee future results. The value of your investments can go down as well as up.
 
 3.3 No Guarantee of Profits
-CascadeTrade Terminal makes NO guarantee of profits, returns, or positive performance. The Service may produce losses. You trade entirely at your own risk.
+Roleigh QuanTrader makes NO guarantee of profits, returns, or positive performance. The Service may produce losses. You trade entirely at your own risk.
 
 3.4 Automated Trading
 When the bot is running, it will execute trades automatically based on your configured settings. This includes buying and selling stocks without manual confirmation. You are responsible for monitoring the bot and stopping it if undesired trades occur.
 
 3.5 Stop Losses and Risk Management
-While CascadeTrade Terminal includes stop-loss and risk management features, these are not foolproof. Market gaps, low liquidity, and system outages can cause stop losses to execute at prices worse than configured. CascadeTrade Terminal is not liable for any losses resulting from failed or delayed stop-loss executions.
+While Roleigh QuanTrader includes stop-loss and risk management features, these are not foolproof. Market gaps, low liquidity, and system outages can cause stop losses to execute at prices worse than configured. Roleigh QuanTrader is not liable for any losses resulting from failed or delayed stop-loss executions.
 
 4. FEES AND PAYMENTS
 
 4.1 Subscription Fees
-CascadeTrade Terminal may charge a monthly subscription fee for use of the Service. Pricing is subject to change. You will be notified of any price changes via email or Discord at least 30 days in advance.
+Roleigh QuanTrader may charge a monthly subscription fee for use of the Service. Pricing is subject to change. You will be notified of any price changes via email or Discord at least 30 days in advance.
 
 4.2 Trading Fees
-Alpaca charges commission-free trades on paper accounts. Live accounts may incur fees as per Alpaca's fee schedule. CascadeTrade Terminal is not responsible for Alpaca's fees.
+Alpaca charges commission-free trades on paper accounts. Live accounts may incur fees as per Alpaca's fee schedule. Roleigh QuanTrader is not responsible for Alpaca's fees.
 
 4.3 Refunds
 A 14-day money-back guarantee is available for new subscribers. After that, subscriptions can be cancelled at any time. You will retain access until the end of your current billing period.
@@ -75,18 +75,18 @@ Key points:
 
 6. INTELLECTUAL PROPERTY
 
-6.1 CascadeTrade Terminal
-All code, design, and content of CascadeTrade Terminal is the intellectual property of the developer. You may not reverse engineer, decompile, redistribute, or resell the Service without explicit written permission.
+6.1 Roleigh QuanTrader
+All code, design, and content of Roleigh QuanTrader is the intellectual property of the developer. You may not reverse engineer, decompile, redistribute, or resell the Service without explicit written permission.
 
 6.2 Your Data
 Your trade history, settings, and preferences remain your property. You may export them at any time.
 
 6.3 Watermarking
-CSV exports from CascadeTrade Terminal include a watermark identifying the source. This watermark must not be removed.
+CSV exports from Roleigh QuanTrader include a watermark identifying the source. This watermark must not be removed.
 
 7. LIMITATION OF LIABILITY
 
-7.1 To the maximum extent permitted by law, CascadeTrade Terminal and its developer shall NOT be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising from:
+7.1 To the maximum extent permitted by law, Roleigh QuanTrader and its developer shall NOT be liable for any direct, indirect, incidental, special, consequential, or punitive damages arising from:
 - Any trading losses, including loss of capital
 - System downtime, bugs, or errors
 - Incorrect signals, missed trades, or delayed executions
@@ -99,7 +99,7 @@ CSV exports from CascadeTrade Terminal include a watermark identifying the sourc
 
 8.1 You may delete your account at any time. Upon deletion, all your data (username, encrypted API keys, trade history, settings) will be permanently removed from our servers within 30 days.
 
-8.2 You must revoke your API keys from your Alpaca dashboard before or after account deletion. CascadeTrade Terminal is not responsible for API keys that remain active in your Alpaca account after service termination.
+8.2 You must revoke your API keys from your Alpaca dashboard before or after account deletion. Roleigh QuanTrader is not responsible for API keys that remain active in your Alpaca account after service termination.
 
 8.3 We reserve the right to suspend or terminate accounts that violate these terms, attempt to abuse the Service, or engage in market manipulation.
 
@@ -119,7 +119,7 @@ These terms are governed by the laws of England and Wales. Any disputes shall be
 
 For questions about these terms, please contact us through our Discord server.
 
-By creating an account and using CascadeTrade Terminal, you confirm that you have read, understood, and agree to these Terms of Service.
+By creating an account and using Roleigh QuanTrader, you confirm that you have read, understood, and agree to these Terms of Service.
 """
 
 
@@ -128,7 +128,7 @@ RISK_DISCLAIMER = """
 
 Trading stocks involves SIGNIFICANT RISK OF LOSS. You could lose some or all of your invested capital. Past performance does not guarantee future results.
 
-CascadeTrade Terminal is automated trading SOFTWARE. It is NOT a financial advisor, investment advisor, or broker-dealer. The signals and trades generated by the Service are based on technical analysis and do not constitute financial advice.
+Roleigh QuanTrader is automated trading SOFTWARE. It is NOT a financial advisor, investment advisor, or broker-dealer. The signals and trades generated by the Service are based on technical analysis and do not constitute financial advice.
 
 • Paper trading uses simulated money. Paper trading results do NOT guarantee similar results with real money.
 • Automated trading means the bot will buy and sell stocks WITHOUT manual confirmation when running.
@@ -138,20 +138,20 @@ CascadeTrade Terminal is automated trading SOFTWARE. It is NOT a financial advis
 
 If you are unsure whether automated trading is suitable for you, consult a qualified financial advisor.
 
-CascadeTrade Terminal does NOT hold, handle, or have access to your trading funds. All money is held by Alpaca Securities LLC, a FINRA-registered broker-dealer. SIPC insurance covers up to $500,000.
+Roleigh QuanTrader is not responsible for any losses or damages arising from the use of the Service. All money is held by Alpaca Securities LLC, a FINRA-registered broker-dealer. SIPC insurance covers up to $500,000.
 
 By using this Service, you acknowledge these risks and accept full responsibility for your trading decisions.
 """
 
 
 PRIVACY_POLICY = """
-CascadeTrade Terminal — Privacy Policy
+Roleigh QuanTrader — Privacy Policy
 
 Last updated: June 2026
 
 1. WHO WE ARE
 
-CascadeTrade Terminal is developed and operated by an independent developer based in the United Kingdom. For the purposes of GDPR, we are the data controller.
+Roleigh QuanTrader is developed and operated by an independent developer based in the United Kingdom. For the purposes of GDPR, we are the data controller.
 
 2. WHAT DATA WE COLLECT
 
@@ -240,7 +240,7 @@ You have the following rights:
 
 6. THIRD-PARTY SERVICES
 
-CascadeTrade Terminal connects to the following third-party services. Each has their own privacy policy:
+Roleigh QuanTrader connects to the following third-party services. Each has their own privacy policy:
 
 6.1 Alpaca (alpaca.markets/privacy) — Holds your trading funds and executes trades. We only send API keys to connect; we do not share personal data with Alpaca beyond what is necessary for account authentication.
 
@@ -272,7 +272,7 @@ For privacy-related questions or data requests, please contact us through our Di
 COOKIE_NOTICE = """
 🍪 Cookie Notice
 
-CascadeTrade Terminal uses essential cookies for:
+Roleigh QuanTrader uses essential cookies for:
 - Session management (keeping you logged in)
 - Security (preventing unauthorised access)
 
@@ -280,7 +280,7 @@ We do NOT use advertising cookies, tracking cookies, or analytics cookies at thi
 
 If we add non-essential cookies in the future (such as analytics), we will update this notice and request your consent before enabling them.
 
-This notice applies to the CascadeTrade Terminal web application only. Third-party services (Alpaca, OpenAI, Discord, Stripe, Finnhub) may set their own cookies according to their own policies.
+This notice applies to the Roleigh QuanTrader web application only. Third-party services (Alpaca, OpenAI, Discord, Stripe, Finnhub) may set their own cookies according to their own policies.
 """
 
 
@@ -296,9 +296,9 @@ ONBOARDING_STEPS = [
             "Verify your email and complete the registration",
             "Start with Paper Trading (fake money, real market data)",
             "Go to Your Apps → Create New App → Generate API Keys",
-            "Copy your API Key and Secret Key — you'll paste these into CascadeTrade",
+            "Copy your API Key and Secret Key — you'll paste these into Roleigh QuanTrader",
         ],
-        "important": "Your money NEVER passes through CascadeTrade. It stays at Alpaca, which is SIPC insured up to $500,000.",
+        "important": "Your money NEVER passes through Roleigh QuanTrader. It stays at Alpaca, which is SIPC insured up to $500,000.",
     },
     {
         "step": 2,
@@ -310,7 +310,7 @@ ONBOARDING_STEPS = [
             "Go to platform.openai.com and create a free account",
             "Navigate to API Keys → Create new secret key",
             "Add $5 credit (this lasts months for sentiment analysis)",
-            "Copy your API key — you'll paste this into CascadeTrade Settings",
+            "Copy your API key — you'll paste this into Roleigh QuanTrader Settings",
         ],
         "important": "Optional. The bot's core signals (RSI, MACD, Bollinger, VIX filter) all work without OpenAI.",
     },
@@ -323,8 +323,8 @@ ONBOARDING_STEPS = [
         "instructions": [
             "Create a Discord server (or use an existing one)",
             "Go to Server Settings → Integrations → Webhooks",
-            "Click 'New Webhook' and give it a name like 'CascadeTrade Alerts'",
-            "Copy the Webhook URL — you'll paste this into CascadeTrade Settings",
+            "Click 'New Webhook' and give it a name like 'Roleigh QuanTrader Alerts'",
+            "Copy the Webhook URL — you'll paste this into Roleigh QuanTrader Settings",
             "Optional: Create a second webhook for Daily P&L reports",
         ],
         "important": "Optional. All alerts are also visible in the app. Discord just lets you see them on your phone.",
@@ -336,11 +336,11 @@ ONBOARDING_STEPS = [
         "url": "",
         "url_text": "",
         "instructions": [
-            "Paste your Alpaca API keys into CascadeTrade Settings (left sidebar)",
+            "Paste your Alpaca API keys into Roleigh QuanTrader Settings (left sidebar)",
             "Click 'Connect' on the Auto Trade tab",
             "Start with Paper Trading to watch how the bot performs",
             "Monitor the bot for a few days before considering real money",
-            "When ready, fund your Alpaca account directly (not through CascadeTrade)",
+            "When ready, fund your Alpaca account directly (not through Roleigh QuanTrader)",
         ],
         "important": "ALWAYS start with paper trading. Never risk real money until you understand how the bot works.",
     },
@@ -349,7 +349,7 @@ ONBOARDING_STEPS = [
 
 def get_terms_summary():
     """Return a short summary for display in the app."""
-    return "By using CascadeTrade Terminal, you agree that: (1) Trading involves risk and you may lose money, (2) CascadeTrade is software not a financial advisor, (3) Your money is held by Alpaca not CascadeTrade, (4) You can revoke API keys at any time, (5) Past performance does not guarantee future results."
+    return "By using Roleigh QuanTrader, you agree that: (1) Trading involves risk and you may lose money, (2) Roleigh QuanTrader is software not a financial advisor, (3) Your money is held by Alpaca not Roleigh QuanTrader, (4) You can revoke API keys at any time, (5) Past performance does not guarantee future results."
 
 
 def get_risk_summary():
@@ -374,7 +374,7 @@ def get_tier_info():
             ],
         },
         "pro": {
-            "name": "CascadeTrade Pro",
+            "name": "Roleigh QuanTrader Pro",
             "icon": "💎",
             "features": [
                 "Everything in Starter",
@@ -390,7 +390,7 @@ def get_tier_info():
             ],
         },
         "fund": {
-            "name": "CascadeTrade Fund",
+            "name": "Roleigh QuanTrader Fund",
             "icon": "🏦",
             "features": [
                 "Everything in Pro",
