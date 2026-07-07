@@ -36,6 +36,9 @@ def get_upcoming_ex_dividends(symbols: List[str], days_ahead: int = 30) -> List[
             div_yield = info.get('dividendYield', 0) or 0
             ex_date_str = info.get('exDividendDate', None)
 
+            if div_yield > 1:
+                div_yield = div_yield / 100
+
             if div_rate > 0:
                 # Calculate approximate next ex-date
                 if ex_date_str:
