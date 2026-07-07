@@ -11,7 +11,7 @@ def send_discord_alert(webhook_url: str, message: str):
 
     payload = {
         "content": message,
-        "username": "CascadeTrade Bot",
+        "username": "Roleigh QuanTrader",
     }
 
     try:
@@ -33,7 +33,7 @@ def send_discord_file(webhook_url: str, file_data: bytes, filename: str, message
 
     payload = {
         "content": message,
-        "username": "CascadeTrade Bot",
+        "username": "Roleigh QuanTrader",
     }
 
     files = {
