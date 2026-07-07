@@ -226,6 +226,7 @@ DEFAULT_SETTINGS = {
     "growth_pct": 0.35,
     "penny_pct": 0.30,
     "profit_skim_pct": 1.0,
+    "discord_profit_alerts": True,
     "use_pct_threshold": False,
     "profit_threshold_pct": 0.20,
     "profit_threshold_amount": 20000,
@@ -267,14 +268,15 @@ DEFAULT_SETTINGS = {
         "min_confidence": 0.25,
     },
     "dividend_settings": {
-        "stop_loss_pct": 0.08,
-        "trailing_stop_pct": 0.05,
-        "take_profit_pct": 0.15,
+        "stop_loss_pct": 0.25,
+        "trailing_stop_pct": 0.15,
+        "take_profit_pct": 0.50,
         "max_position_pct": 0.08,
         "rsi_oversold": 35,
         "rsi_overbought": 70,
         "min_confidence": 0.20,
         "min_dividend_yield": 0.03,
+        "sell_after_ex_dividend": False,
     },
 }
 
@@ -1466,12 +1468,26 @@ class TradingEngine:
                 f"P&L: ${pl:+,.2f} ({pl_pct:+.2%}) | Reason: {reason or 'Stop/Target hit'}"
             )
 
+            # Profit/Loss alert for Discord
+            if self.settings.get("discord_profit_alerts", True):
+                if pl > 0:
+                    self.send_alert(
+                        f"💰 **PROFIT** | **{symbol}** sold for **${pl:+,.2f}** profit ({pl_pct:+.2%}) | "
+                        f"Entry ${entry_price:.2f} → Exit ${current_price:.2f} | {bucket_icon} {bucket.title()}"
+                    )
+                elif pl < 0:
+                    self.send_alert(
+                        f"📉 **LOSS** | **{symbol}** sold at **${pl:+,.2f}** loss ({pl_pct:+.2%}) | "
+                        f"Entry ${entry_price:.2f} → Exit ${current_price:.2f} | {bucket_icon} {bucket.title()}"
+                    )
+
             return {
                 "status": "success",
                 "symbol": symbol,
                 "qty": qty,
                 "pl": pl,
                 "pl_pct": pl_pct,
+                "pl_dollar": pl_dollar,
                 "market_value": market_value,
             }
 
@@ -1634,6 +1650,18 @@ class TradingEngine:
                         self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + d.get("amount", 0)
             except Exception:
                 pass
+            
+            # Check sell after ex-dividend
+            try:
+                sell_div_result = self.check_sell_after_dividend()
+                if sell_div_result:
+                    for result in sell_div_result:
+                        if result.get("close_result", {}).get("status") == "success":
+                            self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + result.get("dividend_income", 0)
+                            self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + result.get("dividend_income", 0)
+            except Exception:
+                pass
+            
 
             # Check profit extraction
             if self.settings.get("auto_extract_profits", True):
@@ -1705,6 +1733,7 @@ class TradingEngine:
                         "qty": qty,
                         "market_value": market_value,
                         "pl_pct": pl_pct,
+                        "pl_dollar": pl_dollar,
                         "current_price": current_price,
                     })
                     total_value += market_value
@@ -1757,7 +1786,24 @@ class TradingEngine:
                 f"Proceeds moved to 🟡 Withdrawal Pot."
             )
 
+            # Send individual profit/loss alerts for each position sold
+            if self.settings.get("discord_profit_alerts", True):
+                for p in positions_sold:
+                    p_pl = p.get("pl_dollar", 0)
+                    p_symbol = p.get("symbol", "")
+                    p_bucket = p.get("bucket", "growth")
+                    p_bucket_icon = BUCKET_ICONS.get(p_bucket, "⚪")
+                    if p_pl > 0:
+                        self.send_alert(
+                            f"💰 **PROFIT** | **{p_symbol}** sold for **${p_pl:+,.2f}** profit | {p_bucket_icon} {p_bucket.title()}"
+                        )
+                    elif p_pl < 0:
+                        self.send_alert(
+                            f"📉 **LOSS** | **{p_symbol}** sold at **${p_pl:+,.2f}** loss | {p_bucket_icon} {p_bucket.title()}"
+                        )
+
             msg = f"Sold {len(positions_sold)} positions worth ${total_value:,.2f}. Proceeds moved to Withdrawal Pot."
+
             if errors:
                 msg += f" Errors: {len(errors)}"
 
@@ -2055,6 +2101,113 @@ class TradingEngine:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    def check_sell_after_dividend(self) -> List[Dict]:
+        """Check if any dividend positions have passed their ex-dividend date
+        and should be sold (if sell_after_ex_dividend is enabled)."""
+        try:
+            if not self.connected or not self.api:
+                return []
+
+            sell_enabled = self.settings.get("dividend_settings", {}).get("sell_after_ex_dividend", False)
+            if not sell_enabled:
+                return []
+
+            positions = self.get_positions()
+            results = []
+            today = datetime.utcnow()
+
+            for p in positions:
+                symbol = p["symbol"]
+                bucket = p.get("bucket", self.classify_stock(symbol))
+
+                # Only sell dividend positions
+                if bucket not in ("dividend", "long_term"):
+                    continue
+
+                qty = p.get("qty", 0)
+                current_price = p.get("current_price", 0)
+                avg_entry_price = p.get("avg_entry_price", 0)
+                pl = p.get("unrealized_pl", 0)
+                pl_pct = p.get("unrealized_plpc", 0)
+                market_value = p.get("market_value", 0)
+
+                try:
+                    if YF_AVAILABLE:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+
+                        div_yield = info.get('dividendYield', 0) or 0
+                        div_rate = info.get('dividendRate', 0) or 0
+                        ex_date_raw = info.get('exDividendDate', None)
+
+                        if not div_yield or div_yield <= 0:
+                            continue
+
+                        if not ex_date_raw:
+                            continue
+
+                        # Parse ex-dividend date
+                        ex_date = None
+                        try:
+                            if isinstance(ex_date_raw, (int, float)):
+                                ex_date = datetime.fromtimestamp(ex_date_raw)
+                            else:
+                                ex_date = pd.to_datetime(ex_date_raw).to_pydatetime()
+                        except Exception:
+                            continue
+
+                        # If ex-date is in the past, estimate next one
+                        if ex_date < today:
+                            ex_date = ex_date + timedelta(days=91)
+                            while ex_date < today:
+                                ex_date += timedelta(days=91)
+
+                        # Calculate days since the last ex-dividend date
+                        # We want to sell 1 day AFTER the ex-dividend date to ensure we qualify
+                        last_ex_date = ex_date - timedelta(days=91)
+                        if last_ex_date < today:
+                            # We're between ex-dates, check if we recently passed one
+                            # If ex_date is more than 91 days away, we may have just passed the last one
+                            days_since_ex = (today - last_ex_date).days
+                        else:
+                            days_since_ex = 999
+
+                        # If we're within 2 days after the ex-dividend date, sell
+                        # (gives 1 day buffer to ensure we qualify for the dividend)
+                        if 0 <= days_since_ex <= 2:
+                            per_share_div = div_rate / 4 if div_rate > 0 else (div_yield * current_price) / 4
+                            total_div_income = per_share_div * qty
+
+                            close_result = self.close_position(symbol,
+                                reason=f"Dividend capture: ex-dividend date passed, captured ${total_div_income:.2f} dividend income")
+
+                            bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+                            if close_result.get("status") == "success":
+                                self.send_alert(
+                                    f"🎯 **DIVIDEND CAPTURED** | Sold **{symbol}** ({bucket_icon} {bucket.title()}) "
+                                    f"after ex-dividend date | Captured ~${total_div_income:.2f} dividend income | "
+                                    f"P&L: ${pl:+,.2f} ({pl_pct:+.2%})"
+                                )
+
+                            results.append({
+                                "symbol": symbol,
+                                "action": "sold_after_dividend",
+                                "ex_date": ex_date.strftime("%Y-%m-%d") if ex_date else "Unknown",
+                                "days_since_ex": days_since_ex,
+                                "dividend_income": round(total_div_income, 2),
+                                "pl": pl,
+                                "pl_pct": pl_pct,
+                                "close_result": close_result,
+                            })
+
+                except Exception:
+                    continue
+
+            return results
+
+        except Exception as e:
+            return []
+
     def get_upcoming_dividends(self, days_ahead: int = 60) -> List[Dict]:
         """Get upcoming ex-dividend dates for watchlist stocks."""
         results = []
@@ -2173,6 +2326,104 @@ class TradingEngine:
 
         except Exception:
             return results
+        
+    def get_position_dividend_income(self) -> List[Dict]:
+        """Get upcoming dividend income for stocks currently held in the portfolio.
+        Shows estimated income, ex-dates, and whether to sell after ex-date."""
+        try:
+            positions = self.get_positions()
+            if not positions:
+                return []
+
+            results = []
+            today = datetime.utcnow()
+
+            for p in positions:
+                symbol = p["symbol"]
+                qty = p.get("qty", 0)
+                market_value = p.get("market_value", 0)
+                avg_entry_price = p.get("avg_entry_price", 0)
+                current_price = p.get("current_price", 0)
+                bucket = p.get("bucket", self.classify_stock(symbol))
+
+                try:
+                    if YF_AVAILABLE:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+
+                        div_yield = info.get('dividendYield', 0) or 0
+                        div_rate = info.get('dividendRate', 0) or 0
+                        ex_date_raw = info.get('exDividendDate', None)
+                        payout_ratio = info.get('payoutRatio', 0) or 0
+
+                        if not div_yield or div_yield <= 0:
+                            continue
+
+                        # Fix: yfinance sometimes returns yield as percentage instead of decimal
+                        if div_yield > 1:
+                            div_yield = div_yield / 100
+
+                        # Calculate estimated annual income
+                        annual_income = div_yield * market_value if market_value > 0 else 0
+                        quarterly_income = annual_income / 4
+                        per_share_quarterly = div_rate / 4 if div_rate > 0 else (div_yield * current_price) / 4
+
+                        # Parse ex-dividend date
+                        ex_date = None
+                        days_until = None
+                        if ex_date_raw:
+                            try:
+                                if isinstance(ex_date_raw, (int, float)):
+                                    ex_date = datetime.fromtimestamp(ex_date_raw)
+                                else:
+                                    ex_date = pd.to_datetime(ex_date_raw).to_pydatetime()
+
+                                # If ex-date is in the past, estimate next one (~3 months)
+                                if ex_date < today:
+                                    ex_date = ex_date + timedelta(days=91)
+                                    while ex_date < today:
+                                        ex_date += timedelta(days=91)
+
+                                days_until = (ex_date - today).days
+                            except Exception:
+                                ex_date = None
+
+                        # Determine if we should hold or sell
+                        sell_after_div = self.settings.get("dividend_settings", {}).get("sell_after_ex_dividend", False)
+                        hold_reason = "Hold for dividend income"
+                        if sell_after_div and ex_date and days_until is not None:
+                            if days_until <= 0:
+                                hold_reason = "Ex-dividend date passed — eligible for dividend"
+                            else:
+                                hold_reason = f"Hold until ex-dividend date ({days_until} days away)"
+
+                        results.append({
+                            "symbol": symbol,
+                            "bucket": bucket,
+                            "qty": qty,
+                            "current_price": current_price,
+                            "market_value": market_value,
+                            "avg_entry_price": avg_entry_price,
+                            "dividend_yield_pct": round(div_yield * 100, 2),
+                            "dividend_rate": round(div_rate, 4) if div_rate else 0,
+                            "per_share_quarterly": round(per_share_quarterly, 4) if per_share_quarterly else 0,
+                            "estimated_annual_income": round(annual_income, 2),
+                            "estimated_quarterly_income": round(quarterly_income, 2),
+                            "payout_ratio_pct": round(payout_ratio * 100, 1) if payout_ratio else 0,
+                            "ex_date": ex_date.strftime("%Y-%m-%d") if ex_date else "Unknown",
+                            "days_until_ex": days_until if days_until is not None else None,
+                            "hold_recommendation": hold_reason,
+                        })
+
+                except Exception:
+                    continue
+
+            # Sort by days until ex-dividend (soonest first)
+            results.sort(key=lambda x: x.get("days_until_ex") if x.get("days_until_ex") is not None else 999)
+            return results
+
+        except Exception as e:
+            return []
 
     def calculate_drip_for_position(self, symbol: str, shares: int) -> Dict:
         """Calculate DRIP projection for a position."""
