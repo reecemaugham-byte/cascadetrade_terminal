@@ -822,6 +822,8 @@ class TradingEngine:
                     else:
                         price = 0
                 div_yield = info.get("dividendYield", 0) or 0
+                if div_yield > 1:
+                    div_yield = div_yield / 100
                 penny_threshold = self.settings.get("penny_settings", {}).get(
                     "penny_price_threshold", self.settings.get("penny_price_threshold", 5.0))
                 min_div_yield = self.settings.get("dividend_settings", {}).get(
@@ -862,6 +864,8 @@ class TradingEngine:
                 info = ticker.info or {}
                 price = info.get("currentPrice", info.get("regularMarketPrice", 0))
                 div_yield = info.get("dividendYield", 0) or 0
+                if div_yield > 1:
+                    div_yield = div_yield / 100
                 market_cap = info.get("marketCap", 0) or 0
                 sector = info.get("sector", "Unknown")
                 result["price"] = price
@@ -2034,6 +2038,8 @@ class TradingEngine:
                         ticker = yf.Ticker(symbol)
                         info = ticker.info or {}
                         div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 1:
+                            div_yield = div_yield / 100
                         if div_yield > 0:
                             hist = ticker.history(period="1y")
                             if not hist.empty and 'Dividends' in hist.columns:
@@ -2228,6 +2234,8 @@ class TradingEngine:
                         ticker = yf.Ticker(symbol)
                         info = ticker.info or {}
                         div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 1:
+                            div_yield = div_yield / 100
                         if div_yield > 0:
                             ex_date_raw = info.get("exDividendDate", None)
                             if ex_date_raw:
@@ -2287,6 +2295,8 @@ class TradingEngine:
                         ticker = yf.Ticker(symbol)
                         info = ticker.info or {}
                         div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 1:
+                            div_yield = div_yield / 100
                         if div_yield > 0:
                             payout_ratio = info.get("payoutRatio", 0) or 0
                             price = info.get("currentPrice", info.get("regularMarketPrice", 0))
@@ -2436,6 +2446,8 @@ class TradingEngine:
 
             price = info.get("currentPrice", info.get("regularMarketPrice", 0))
             div_yield = info.get("dividendYield", 0) or 0
+            if div_yield > 1:
+                div_yield = div_yield / 100
 
             if not price or price <= 0:
                 hist = ticker.history(period="5d")
