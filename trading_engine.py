@@ -1,65 +1,44 @@
-"""
-trading_engine.py
-CascadeTrade Terminal — Diamond Standard Trading Engine
-3-bucket system: Dividend (🟢), Growth (🔵), Penny (🔴), Withdrawal (🟡)
-Advanced signals: MACD, Bollinger, MA Cross, ATR, VIX filter
-ATR position sizing, backtesting, dividend calendar, audit trail
-Batch scanning for speed, Sell Everything, Rebalance, Move from Withdrawal
-"""
-
-import os
 import threading
-import time
 import json
 import csv
-from datetime import datetime, timedelta, date, time as dt_time
-from pathlib import Path
-from typing import List, Dict, Optional
+import os
+import time
+import math
+import re
+from datetime import datetime, timedelta, timezone
 from math import sqrt
+from typing import Dict, List, Optional, Any, Tuple, Union
+from pathlib import Path
+from collections import defaultdict
+import copy
+
+import pandas as pd
+import numpy as np
 
 try:
     import yfinance as yf
     YF_AVAILABLE = True
-except ImportError:
+except Exception:
     YF_AVAILABLE = False
-
-try:
-    import ta
-    TA_AVAILABLE = True
-except ImportError:
-    TA_AVAILABLE = False
-
-try:
-    import pandas as pd
-    import numpy as np
-    PANDAS_AVAILABLE = True
-except ImportError:
-    PANDAS_AVAILABLE = False
 
 try:
     import alpaca_trade_api as tradeapi
     ALPACA_AVAILABLE = True
-except ImportError:
+except Exception:
     tradeapi = None
     ALPACA_AVAILABLE = False
 
-# ==========================================
-# DIAMOND STANDARD MODULE IMPORTS
-# ==========================================
 try:
-    from core.signals import (
-        generate_all_signals, calculate_combined_score,
-        multi_timeframe_check, calculate_atr, vix_filter
-    )
-    ADVANCED_SIGNALS_AVAILABLE = True
-except ImportError:
-    ADVANCED_SIGNALS_AVAILABLE = False
+    import ta
+    TA_AVAILABLE = True
+except Exception:
+    TA_AVAILABLE = False
 
 try:
-    from core.backtest import BacktestEngine
-    BACKTEST_AVAILABLE = True
-except ImportError:
-    BACKTEST_AVAILABLE = False
+    from core.signals import generate_all_signals, calculate_combined_score, vix_filter
+    ADVANCED_SIGNALS_AVAILABLE = True
+except Exception:
+    ADVANCED_SIGNALS_AVAILABLE = False
 
 try:
     from core.metrics import (
@@ -69,7 +48,7 @@ try:
         generate_full_report
     )
     ADVANCED_METRICS_AVAILABLE = True
-except ImportError:
+except Exception:
     ADVANCED_METRICS_AVAILABLE = False
 
 try:
@@ -79,39 +58,89 @@ try:
         get_dividend_growth, calculate_drip, get_dividend_comparison
     )
     DIVIDEND_CALENDAR_AVAILABLE = True
-except ImportError:
+except Exception:
     DIVIDEND_CALENDAR_AVAILABLE = False
 
 try:
-    from core import ipo_scanner
+    from core.backtest import BacktestEngine
+    BACKTEST_AVAILABLE = True
+except Exception:
+    BACKTEST_AVAILABLE = False
+
+try:
+    from core.ipo_scanner import load_known_symbols, save_symbol_snapshot, get_upcoming_ipos
     IPO_SCANNER_AVAILABLE = True
-except ImportError:
+except Exception:
     IPO_SCANNER_AVAILABLE = False
 
 try:
-    from core.audit import (
-        log_audit, get_audit_trail, save_journal_entry,
-        get_journal_entries, log_trade_audit, log_deposit_audit,
-        log_settings_audit, log_login_audit
+    from core.alerts import send_discord_alert, send_discord_file
+    ALERTS_AVAILABLE = True
+except Exception:
+    ALERTS_AVAILABLE = False
+
+try:
+    from core.database import (
+        SessionLocal, User, Trade, authenticate_user, create_user,
+        record_dividend, get_dividend_history, save_trade_to_db,
+        load_trades_from_db, clear_trades_from_db
     )
+    DB_AVAILABLE = True
+except Exception:
+    DB_AVAILABLE = False
+
+try:
+    from core.audit import log_trade_audit, log_audit
     AUDIT_AVAILABLE = True
-except ImportError:
+except Exception:
     AUDIT_AVAILABLE = False
 
 try:
-    from core.encryption import encrypt_value, decrypt_value, is_encrypted, is_key_encrypted, verify_encryption_working
+    from core.encryption import encrypt_value, decrypt_value
     ENCRYPTION_AVAILABLE = True
-    ENCRYPTION_READY = verify_encryption_working()
-except ImportError:
-    ENCRYPTION_AVAILABLE = False
-    ENCRYPTION_READY = False
 except Exception:
     ENCRYPTION_AVAILABLE = False
-    ENCRYPTION_READY = False
+
 
 # ==========================================
-# BUCKET ICONS
+# CONSTANTS
 # ==========================================
+US_QUICK_TURNOVER = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AMD", "INTC",
+    "NFLX", "PYPL", "ADBE", "CRM", "ORCL", "IBM", "QCOM", "TXN", "AVGO",
+    "INTU", "SHOP", "SNOW", "PLTR", "COIN", "SQ", "ROKU", "ZM", "CRWD",
+    "DDOG", "NET", "MDB", "OKTA", "ZS", "PANW", "RIVN", "LCID", "NIO",
+    "UBER", "ABNB", "RBLX", "SOFI", "HOOD", "UPST", "AFRM", "OPEN", "F",
+    "GM", "DIS", "BA", "CAT", "GE", "LMT", "NOC", "RTX", "DE", "UNP", "CSX",
+]
+US_LONG_TERM = 365  # days — long-term capital gains threshold
+
+DIVIDEND_STOCKS = [
+    "AAPL", "MSFT", "JNJ", "PG", "KO", "PEP", "VZ", "T", "XOM", "CVX",
+    "ABBV", "LLY", "MRK", "PFE", "MO", "HD", "WMT", "COST", "TGT", "V",
+    "UNH", "ABT", "TMO", "AVGO", "TXN", "QCOM", "INTC", "CSCO", "IBM", "ORCL",
+    "LIN", "DHR", "RTX", "HON", "UPS", "BA", "CAT", "DE", "MMM", "SPGI",
+    "MMC", "AON", "CME", "ICE", "BLK", "SCHW", "PGR", "ALL", "BRK.B", "GLW",
+    "O", "OHI", "STAG", "VICI", "MPW", "AGNC", "NLY", "LMT", "NOC", "GD",
+    "RTX", "EMR", "ETN", "GIS", "CL", "KMB", "CLX", "EL", "APD", "ECL",
+    "FIS", "GPN", "MA", "COF", "CB", "CINF", "MET", "AFL", "PRU", "TRV",
+    "AIG", "ALL", "BRO", "CF", "MOS", "NUE", "STLD", "FCX", "F", "GM",
+    "COP", "SLB", "EOG", "OXY", "MPC", "VLO", "PSX", "KMI", "WMB", "ET",
+    "OKE", "D", "DUK", "SO", "NEE", "AEP", "EXC", "XEL", "SRE", "AWK",
+    "WEC", "DTE", "PEG", "ESRX", "CI", "HUM", "CNC", "ELV", "WBA", "RAD",
+]
+
+GROWTH_STOCKS = [
+    "AMZN", "GOOGL", "GOOG", "META", "NVDA", "TSLA", "NFLX", "AMD", "PYPL",
+    "ADBE", "CRM", "SHOP", "SNOW", "PLTR", "COIN", "SQ", "ROKU", "ZM", "CRWD",
+    "DDOG", "NET", "MDB", "OKTA", "ZS", "PANW", "RIVN", "LCID", "NIO", "RBLX",
+    "U", "PATH", "AI", "SOFI", "HOOD", "AFRM", "UPST", "OPEN", "EXAS", "VEEV",
+    "WDAY", "TEAM", "DOCU", "ZI", "BILL", "HUBS", "TWLO", "ESTC", "FSLR",
+    "ENPH", "SEDG", "RUN", "BE", "PLUG", "BLNK", "CHPT", "NKLA", "QS", "RMO",
+    "UBER", "LYFT", "ABNB", "PINS", "SNAP", "SPOT", "MSTR", "SE", "MELI",
+    "WIX", "ETSY", "INTU", "MNST",
+]
+
 BUCKET_ICONS = {
     "dividend": "🟢",
     "growth": "🔵",
@@ -120,2947 +149,3174 @@ BUCKET_ICONS = {
     "long_term": "🟢",
 }
 
-# ==========================================
-# PREDEFINED STOCK LISTS
-# ==========================================
-US_QUICK_TURNOVER = [
-    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META",
-    "AMD", "NFLX", "PYPL", "SQ", "ROKU", "ZM", "PLTR", "COIN",
-    "SOFI", "RIVN", "LCID", "NIO", "MARA", "RIOT",
-    "BAC", "C", "WFC", "GS", "MS", "JPM",
-    "CCL", "NCLH", "UAL", "AAL", "DAL",
-    "DIS", "WBD", "PARA", "SNAP", "PINS", "SHOP", "ETSY",
-    "BABA", "JD", "PDD",
-    "XOM", "CVX", "FANG",
-    "MRNA", "BIIB",
-    "F", "GM", "NKE", "INTC", "MU", "LRCX",
-]
-
-US_LONG_TERM = [
-    "JNJ", "PG", "KO", "PEP", "V", "MA", "UNH", "HD", "COST",
-    "ABBV", "LLY", "MRK", "TMO", "AVGO", "TXN", "AAPL", "MSFT",
-    "BRK-B", "VZ", "T", "XOM", "CVX", "SPY", "QQQ",
-    "WM", "LIN", "RTX", "HON", "UPS", "CAT", "DE",
-    "LOW", "BLK", "CME", "ICE", "MMC", "AON",
-]
-
-DIVIDEND_STOCKS = [
-    "JNJ", "PG", "KO", "PEP", "VZ", "T", "XOM", "CVX", "ABBV", "MRK",
-    "HD", "WMT", "COST", "V", "MA", "UNH", "LLY", "AVGO", "TXN", "LIN",
-    "WM", "RTX", "HON", "UPS", "CAT", "DE", "LOW", "BLK", "CME", "ICE",
-    "MMC", "AON", "O", "OHI", "STAG", "VICI", "AMT", "PLD", "DLR",
-    "EQIX", "PSA", "ESS", "UDR", "INVH", "IBM", "CSCO", "PFE", "MO",
-    "PM", "BMY", "GILD", "VFC", "TGT", "CL", "KMB", "ED", "NEE", "DUK",
-    "SO", "D", "AEP", "AWK", "WBA", "KR", "MDLZ", "CLX", "CHD",
-    "LGEN.L", "AVST.L", "SSE.L", "NG.L", "ULVR.L", "BP.L", "SHEL.L",
-]
-
-GROWTH_STOCKS = [
-    "AMZN", "GOOGL", "META", "TSLA", "NVDA", "NFLX", "PLTR", "COIN",
-    "SHOP", "SNAP", "ROKU", "ZM", "SQ", "MARA", "RIOT",
-    "CRM", "ADBE", "INTU", "SNOW", "DDOG", "NET", "ZS", "CRWD",
-    "MRNA", "BIIB", "REGN", "VRTX",
-]
-
 SECTOR_MAP = {
-    "AAPL": "Tech", "MSFT": "Tech", "GOOGL": "Tech", "AMZN": "Tech",
-    "NVDA": "Tech", "TSLA": "Auto/Tech", "META": "Tech", "AMD": "Tech",
-    "NFLX": "Tech", "PYPL": "Fintech", "SQ": "Fintech", "ROKU": "Tech",
-    "ZM": "Tech", "PLTR": "Tech", "COIN": "Fintech", "SOFI": "Fintech",
-    "RIVN": "Auto/Tech", "LCID": "Auto/Tech", "NIO": "Auto/Tech",
-    "MARA": "Crypto", "RIOT": "Crypto", "BAC": "Financials",
-    "C": "Financials", "WFC": "Financials", "GS": "Financials",
-    "MS": "Financials", "JPM": "Financials", "CCL": "Travel",
-    "NCLH": "Travel", "UAL": "Travel", "AAL": "Travel", "DAL": "Travel",
-    "DIS": "Media", "WBD": "Media", "PARA": "Media", "SNAP": "Tech",
-    "PINS": "Tech", "SHOP": "Tech", "ETSY": "Tech", "BABA": "China Tech",
-    "JD": "China Tech", "PDD": "China Tech", "XOM": "Energy",
-    "CVX": "Energy", "FANG": "Energy", "MRNA": "Biotech", "BIIB": "Biotech",
-    "F": "Auto", "GM": "Auto", "NKE": "Consumer", "INTC": "Tech",
-    "MU": "Tech", "LRCX": "Tech",
-    "JNJ": "Healthcare", "PG": "Consumer Staples", "KO": "Consumer Staples",
-    "PEP": "Consumer Staples", "V": "Fintech", "MA": "Fintech",
-    "UNH": "Healthcare", "HD": "Consumer", "COST": "Consumer",
-    "ABBV": "Healthcare", "LLY": "Healthcare", "MRK": "Healthcare",
-    "TMO": "Healthcare", "AVGO": "Tech", "TXN": "Tech", "LIN": "Materials",
-    "WM": "Industrials", "RTX": "Industrials", "HON": "Industrials",
-    "UPS": "Industrials", "CAT": "Industrials", "DE": "Industrials",
-    "LOW": "Consumer", "BLK": "Financials", "CME": "Financials",
-    "ICE": "Financials", "MMC": "Financials", "AON": "Financials",
-    "VZ": "Telecom", "T": "Telecom", "BRK-B": "Financials",
-    "WBA": "Consumer", "IBM": "Tech", "CSCO": "Tech", "PFE": "Healthcare",
-    "MO": "Consumer Staples", "PM": "Consumer Staples", "BMY": "Healthcare",
-    "GILD": "Healthcare", "O": "REITs", "OHI": "REITs", "STAG": "REITs",
-    "VICI": "REITs", "AMT": "REITs", "PLD": "REITs", "DLR": "REITs",
-    "CRM": "Tech", "ADBE": "Tech", "INTU": "Tech",
-    "SNOW": "Tech", "DDOG": "Tech", "NET": "Tech", "ZS": "Tech",
-    "CRWD": "Tech", "REGN": "Biotech", "VRTX": "Biotech",
+    "AAPL": "Technology", "MSFT": "Technology", "GOOGL": "Technology", "GOOG": "Technology",
+    "META": "Technology", "NVDA": "Technology", "AMD": "Technology", "INTC": "Technology",
+    "CSCO": "Technology", "ORCL": "Technology", "IBM": "Technology", "QCOM": "Technology",
+    "TXN": "Technology", "AVGO": "Technology", "ADBE": "Technology", "CRM": "Technology",
+    "NFLX": "Technology", "PYPL": "Technology", "SNOW": "Technology", "PLTR": "Technology",
+    "NET": "Technology", "MDB": "Technology", "OKTA": "Technology", "ZS": "Technology",
+    "CRWD": "Technology", "DDOG": "Technology", "SHOP": "Technology", "U": "Technology",
+    "PATH": "Technology", "AI": "Technology", "FSLR": "Technology", "ENPH": "Technology",
+    "SEDG": "Technology", "RUN": "Technology", "PLUG": "Technology", "BE": "Technology",
+    "COIN": "Technology", "SQ": "Technology", "ROKU": "Technology", "ZM": "Technology",
+    "PINS": "Technology", "SNAP": "Technology", "SPOT": "Technology", "ABNB": "Consumer Discretionary",
+    "UBER": "Technology", "LYFT": "Technology", "HOOD": "Financials", "SOFI": "Financials",
+    "AFRM": "Financials", "UPST": "Financials", "DOCU": "Technology", "HUBS": "Technology",
+    "TWLO": "Technology", "ESTC": "Technology", "BILL": "Technology", "ZI": "Technology",
+    "WDAY": "Technology", "TEAM": "Technology", "VEEV": "Healthcare", "MSTR": "Technology",
+    "JNJ": "Healthcare", "UNH": "Healthcare", "ABBV": "Healthcare", "LLY": "Healthcare",
+    "MRK": "Healthcare", "PFE": "Healthcare", "TMO": "Healthcare", "ABT": "Healthcare",
+    "MRNA": "Healthcare", "EXAS": "Healthcare", "BIIB": "Healthcare", "GILD": "Healthcare",
+    "AMGN": "Healthcare", "REGN": "Healthcare", "VRTX": "Healthcare", "ISRG": "Healthcare",
+    "IDXX": "Healthcare", "ILMN": "Healthcare", "ALGN": "Healthcare", "DXCM": "Healthcare",
+    "CI": "Healthcare", "HUM": "Healthcare", "CNC": "Healthcare", "ELV": "Healthcare",
+    "ESRX": "Healthcare", "VTRS": "Healthcare", "BMY": "Healthcare", "CVS": "Healthcare",
+    "WBA": "Healthcare", "V": "Financials", "MA": "Financials", "JPM": "Financials",
+    "BAC": "Financials", "WFC": "Financials", "GS": "Financials", "MS": "Financials",
+    "C": "Financials", "BLK": "Financials", "SCHW": "Financials", "COF": "Financials",
+    "CB": "Financials", "CINF": "Financials", "MET": "Financials", "AFL": "Financials",
+    "PRU": "Financials", "TRV": "Financials", "AIG": "Financials", "ALL": "Financials",
+    "AON": "Financials", "MMC": "Financials", "ICE": "Financials", "CME": "Financials",
+    "FIS": "Financials", "GPN": "Financials", "BRO": "Financials", "PG": "Consumer Staples",
+    "KO": "Consumer Staples", "PEP": "Consumer Staples", "WMT": "Consumer Staples",
+    "COST": "Consumer Staples", "TGT": "Consumer Staples", "CL": "Consumer Staples",
+    "KMB": "Consumer Staples", "CLX": "Consumer Staples", "EL": "Consumer Staples",
+    "GIS": "Consumer Staples", "MO": "Consumer Staples", "MDLZ": "Consumer Staples",
+    "HSY": "Consumer Staples", "AMZN": "Consumer Discretionary", "TSLA": "Consumer Discretionary",
+    "HD": "Consumer Discretionary", "NKE": "Consumer Discretionary", "SBUX": "Consumer Discretionary",
+    "LOW": "Consumer Discretionary", "BKNG": "Consumer Discretionary", "RIVN": "Consumer Discretionary",
+    "LCID": "Consumer Discretionary", "F": "Consumer Discretionary", "GM": "Consumer Discretionary",
+    "RBLX": "Consumer Discretionary", "ETSY": "Consumer Discretionary",
+    "XOM": "Energy", "CVX": "Energy", "COP": "Energy", "SLB": "Energy", "EOG": "Energy",
+    "OXY": "Energy", "MPC": "Energy", "VLO": "Energy", "PSX": "Energy", "KMI": "Energy",
+    "FANG": "Energy", "HAL": "Energy", "BKR": "Energy", "DVN": "Energy", "MRO": "Energy",
+    "WES": "Energy", "ET": "Energy", "OKE": "Energy", "WMB": "Energy",
+    "BA": "Industrials", "CAT": "Industrials", "DE": "Industrials", "MMM": "Industrials",
+    "GE": "Industrials", "HON": "Industrials", "LMT": "Industrials", "NOC": "Industrials",
+    "GD": "Industrials", "RTX": "Industrials", "UNP": "Industrials", "CSX": "Industrials",
+    "NSC": "Industrials", "EMR": "Industrials", "ETN": "Industrials", "FTV": "Industrials",
+    "PH": "Industrials", "IR": "Industrials", "DOV": "Industrials", "ITW": "Industrials",
+    "LIN": "Materials", "APD": "Materials", "ECL": "Materials", "SHW": "Materials",
+    "FCX": "Materials", "NUE": "Materials", "STLD": "Materials", "CF": "Materials",
+    "MOS": "Materials", "DD": "Materials", "NEE": "Utilities", "DUK": "Utilities",
+    "SO": "Utilities", "D": "Utilities", "AEP": "Utilities", "EXC": "Utilities",
+    "XEL": "Utilities", "SRE": "Utilities", "AWK": "Utilities", "WEC": "Utilities",
+    "DTE": "Utilities", "PEG": "Utilities", "ES": "Utilities",
+    "O": "Real Estate", "OHI": "Real Estate", "STAG": "Real Estate", "VICI": "Real Estate",
+    "MPW": "Real Estate", "AMT": "Real Estate", "PLD": "Real Estate", "CCI": "Real Estate",
+    "EQIX": "Real Estate", "DLR": "Real Estate", "PSA": "Real Estate", "WELL": "Real Estate",
+    "VTR": "Real Estate", "UDR": "Real Estate",
+    "DIS": "Communication Services", "VZ": "Communication Services", "T": "Communication Services",
+    "CMCSA": "Communication Services", "TMUS": "Communication Services", "EA": "Communication Services",
+    "TTWO": "Communication Services",
+}
+
+DEFAULT_SETTINGS = {
+    "max_positions": 10,
+    "max_position_pct": 0.08,
+    "daily_loss_limit_pct": 0.03,
+    "stop_loss_pct": 0.05,
+    "take_profit_pct": 0.10,
+    "min_confidence": 0.25,
+    "scan_interval_min": 5,
+    "max_same_sector": 3,
+    "min_rvol": 1.5,
+    "dividend_pct": 0.35,
+    "growth_pct": 0.35,
+    "penny_pct": 0.30,
+    "profit_skim_pct": 1.0,
+    "use_pct_threshold": False,
+    "profit_threshold_pct": 0.20,
+    "profit_threshold_amount": 20000,
+    "auto_extract_profits": True,
+    "use_advanced_signals": True,
+    "use_vix_filter": True,
+    "use_atr_position_sizing": True,
+    "use_multi_timeframe": False,
+    "discord_privacy_mode": True,
+    "watchlist_auto": True,
+    "watchlist_auto_count": 100,
+    "penny_price_threshold": 5.0,
+    "min_dividend_yield": 0.03,
+    "watchlist": [
+        "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "JPM",
+        "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY",
+        "XOM", "CVX", "BA", "COST", "AVGO", "CRM", "ADBE", "NFLX", "AMD",
+        "INTC", "PYPL", "DIS", "SBUX", "NKE", "MRK", "PFE", "TMO", "ABT",
+        "CSCO", "ORCL", "IBM", "QCOM", "TXN", "PLTR", "COIN", "RIVN", "NIO",
+        "O", "OHI", "STAG", "VICI", "NEE", "DUK", "CAT", "DE", "MMM", "GE",
+    ],
+    "penny_settings": {
+        "stop_loss_pct": 0.03,
+        "trailing_stop_pct": 0.02,
+        "take_profit_pct": 0.08,
+        "max_position_pct": 0.04,
+        "rsi_oversold": 25,
+        "rsi_overbought": 60,
+        "min_confidence": 0.30,
+        "penny_price_threshold": 5.0,
+    },
+    "growth_settings": {
+        "stop_loss_pct": 0.06,
+        "trailing_stop_pct": 0.04,
+        "take_profit_pct": 0.12,
+        "max_position_pct": 0.08,
+        "rsi_oversold": 30,
+        "rsi_overbought": 65,
+        "min_confidence": 0.25,
+    },
+    "dividend_settings": {
+        "stop_loss_pct": 0.08,
+        "trailing_stop_pct": 0.05,
+        "take_profit_pct": 0.15,
+        "max_position_pct": 0.08,
+        "rsi_oversold": 35,
+        "rsi_overbought": 70,
+        "min_confidence": 0.20,
+        "min_dividend_yield": 0.03,
+    },
 }
 
 
 class TradingEngine:
-    """Diamond Standard Trading Engine with 3-bucket system, advanced signals,
-    ATR position sizing, VIX filter, backtesting, dividend calendar, and audit trail."""
+    """Main trading engine class — all methods at 4-space indent."""
 
     def __init__(self):
-        self.errors = []
-        self._lock = threading.Lock()
         self.api = None
         self.connected = False
         self.running = False
-        self.thread = None
-        self._stop_event = threading.Event()
-        self._alpaca_api_ref = None
-
-        self.MAX_RECONNECT_ATTEMPTS = 5
-        self.RECONNECT_BASE_DELAY = 10
-        self.MAX_RECONNECT_DELAY = 300
-
-        self._stock_info_cache = {}
-
+        self.username = ""
+        self.status_message = "Not connected"
+        self.cycle_count = 0
+        self.daily_pnl = 0.0
+        self.last_equity = 0.0
+        self.signals_found = []
+        self.trade_log = []
+        self.equity_snapshots = []
         self.terms_accepted = False
         self.terms_accepted_date = None
-
-        if ENCRYPTION_AVAILABLE and not ENCRYPTION_READY:
-            self._log_error("WARNING: Encryption module available but not working properly. API keys may not be secure.")
-
-        # ============================================================
-        # TRADING SETTINGS
-        # ============================================================
-        self.settings = {
-            "mode": "quick",
-            "max_positions": 10,
-            "max_position_pct": 0.08,
-            "daily_loss_limit_pct": 0.03,
-            "stop_loss_pct": 0.05,
-            "take_profit_pct": 0.10,
-            "trailing_stop_pct": 0.03,
-            "rsi_oversold": 30,
-            "rsi_overbought": 70,
-            "min_rvol": 1.5,
-            "min_confidence": 0.25,
-            "max_same_sector": 3,
-            "scan_interval_min": 8,
-            "watchlist": US_QUICK_TURNOVER.copy(),
-            "slippage_pct": 0.05,
-            "sec_fee_pct": 0.00002,
-            # --- BUCKET SETTINGS (3-bucket) ---
-            "deposit_amount": 1000,
-            "dividend_pct": 0.35,
-            "growth_pct": 0.35,
-            "penny_pct": 0.30,
-            "min_dividend_yield": 0.03,
-            "penny_price_threshold": 5.0,
-            "profit_threshold_amount": 10000,
-            "profit_threshold_pct": 0.10,
-            "profit_skim_pct": 1.0,
-            "use_pct_threshold": True,
-            "auto_extract_profits": True,
-            "penny_profits_to_growth": True,
-            "growth_profits_to_dividend": True,
-            "dividends_to_withdrawal": True,
-            "original_capital": 100000,
-            "watchlist_auto": False,
-            "watchlist_auto_count": 100,
-            # --- PRIVACY ---
-            "discord_privacy_mode": True,
-            # --- DISCORD ALERTS ---
-            "discord_webhook_url": "",
-            # --- ADVANCED SIGNAL SETTINGS ---
-            "use_advanced_signals": True,
-            "use_multi_timeframe": False,
-            "use_vix_filter": True,
-            "vix_max_threshold": 28.0,
-            "use_atr_position_sizing": True,
-            "atr_risk_pct": 0.01,
-            "signal_weights": {
-                "rsi": 1.0, "macd": 1.2, "bollinger": 0.8,
-                "ma_cross": 1.5, "volume": 0.6, "atr": 0.5
-            },
-            # --- BUCKET-SPECIFIC SETTINGS ---
-            "penny_settings": {
-                "stop_loss_pct": 0.03,
-                "take_profit_pct": 0.08,
-                "trailing_stop_pct": 0.02,
-                "max_position_pct": 0.04,
-                "rsi_oversold": 25,
-                "rsi_overbought": 60,
-                "min_confidence": 0.30,
-                "min_rvol": 1.5,
-            },
-            "growth_settings": {
-                "stop_loss_pct": 0.06,
-                "take_profit_pct": 0.12,
-                "trailing_stop_pct": 0.04,
-                "max_position_pct": 0.08,
-                "rsi_oversold": 30,
-                "rsi_overbought": 65,
-                "min_confidence": 0.25,
-                "min_rvol": 1.0,
-            },
-            "dividend_settings": {
-                "stop_loss_pct": 0.08,
-                "take_profit_pct": 0.15,
-                "trailing_stop_pct": 0.05,
-                "max_position_pct": 0.08,
-                "rsi_oversold": 35,
-                "rsi_overbought": 70,
-                "min_confidence": 0.20,
-                "min_rvol": 0.8,
-            },
-        }
-
-        # State tracking
-        self.daily_pnl = 0.0
-        self.daily_start_equity = 0.0
+        self.known_symbols = []
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._position_cache = {}
+        self._position_cache_time = 0
+        self._sector_cache = {}
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._daily_start_equity = 0.0
+        self._trailing_stops = {}
+        self._alpaca_api_ref = None
         self.daily_reset_date = None
-        self.signals_found = []
         self.near_signals = []
-        self.trade_log = []
-        self.last_scan_time = None
-        self.status_message = "Not started"
-        self.cycle_count = 0
-        self.errors = []
-
-        self.reconnect_count = 0
-        self.last_reconnect_time = None
-        self.last_successful_cycle = None
-        self.consecutive_failures = 0
-
-        self.equity_snapshots = []
         self.signal_history = []
         self.performance_metrics = {}
-        self._spy_start_value = None
+        self._spy_start_value = 0.0
         self._spy_start_date = None
-        self._portfolio_start_value = None
+        self._portfolio_start_value = 0.0
+        self.last_ipo_scan_date = None
+        self.reconnect_count = 0
+        self.consecutive_failures = 0
+        self.last_reconnect_time = None
+        self.last_successful_cycle = None
+        self.MAX_RECONNECT_ATTEMPTS = 5
+        self.RECONNECT_BASE_DELAY = 30
+        self.MAX_RECONNECT_DELAY = 300
 
-        # ============================================================
-        # 3-BUCKET SYSTEM
-        # ============================================================
         self.buckets = {
             "dividend": {
-                "positions": [],
-                "cash_allocated": 0,
-                "total_deposited": 0,
-                "total_dividends_earned": 0,
+                "value": 0.0,
+                "positions": 0,
+                "total_deposited": 0.0,
+                "cash_allocated": 0.0,
+                "dividends_earned": 0.0,
+                "profits_moved_in": 0.0,
+                "total_withdrawn": 0.0,
+                "deposit_history": [],
+                "extraction_history": [],
+                "dividend_history": [],
+                "last_deposit_date": None,
             },
             "growth": {
-                "positions": [],
-                "cash_allocated": 0,
-                "total_deposited": 0,
-                "profits_moved_in": 0,
+                "value": 0.0,
+                "positions": 0,
+                "total_deposited": 0.0,
+                "cash_allocated": 0.0,
+                "profits_moved_in": 0.0,
+                "total_withdrawn": 0.0,
+                "deposit_history": [],
+                "extraction_history": [],
+                "last_deposit_date": None,
             },
             "penny": {
-                "positions": [],
-                "cash_allocated": 0,
-                "total_deposited": 0,
-                "profits_to_growth": 0,
+                "value": 0.0,
+                "positions": 0,
+                "total_deposited": 0.0,
+                "cash_allocated": 0.0,
+                "profits_to_growth": 0.0,
+                "total_withdrawn": 0.0,
+                "deposit_history": [],
+                "extraction_history": [],
+                "last_deposit_date": None,
             },
             "withdrawal": {
-                "available": 0,
-                "total_withdrawn": 0,
-                "dividends_received": 0,
-                "profits_extracted": 0,
+                "available": 0.0,
+                "dividends_received": 0.0,
+                "profits_extracted": 0.0,
+                "total_withdrawn": 0.0,
+                "deposit_history": [],
+                "extraction_history": [],
+                "dividend_history": [],
+                "last_deposit_date": None,
             },
-            "original_capital": 100000,
-            "last_deposit_date": None,
-            "deposit_history": [],
-            "extraction_history": [],
-            "dividend_history": [],
+            "original_capital": 0,
+            "last_updated": None,
         }
 
-        self.scan_summary = {
-            "last_scan": None,
-            "stocks_scanned": 0,
-            "stocks_success": 0,
-            "stocks_no_data": 0,
-            "errors_count": 0,
-            "error_details": [],
-            "data_source": "none",
-        }
-
-        # --- IPO & NEW LISTINGS ---
-        self.known_symbols = ipo_scanner.load_known_symbols() if IPO_SCANNER_AVAILABLE else []
-        self.last_ipo_scan_date = None  # Only scan IPOs once per day
-
-        self.log_dir = Path("data/trading_logs")
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.exports_dir = Path("data/exports")
-        self.exports_dir.mkdir(parents=True, exist_ok=True)
-
-        self._load_trade_log()
-        self._load_equity_snapshots()
-        self._load_signal_history()
-        self._load_performance_metrics()
-        self._load_buckets()
+        self.settings = dict(DEFAULT_SETTINGS)
         self.load_settings()
+        self._load_trade_log()
+
+    # ==========================================
+    # Connection & Lifecycle
+    # ==========================================
 
     def set_username(self, username: str):
-        self._username = username
+        """Set the username for this engine instance."""
+        self.username = username
+        self.load_settings()
+        self._load_trade_log()
 
-    def _get_finhub_key(self) -> str:
-        """Get the Finnhub API key for the current user.
-        Checks the database first, then falls back to environment variable.
-        """
+    def connect(self, api) -> bool:
+        """Connect to Alpaca API and verify the connection."""
         try:
-            username = getattr(self, '_username', '')
-            if username:
-                from core.database import SessionLocal, get_finhub_api_key
-                db = SessionLocal()
-                try:
-                    key = get_finhub_api_key(db, username)
-                    if key:
-                        return key
-                finally:
-                    db.close()
-        except Exception:
-            pass
-        # Fallback to environment variable
-        return os.environ.get("FINNHUB_API_KEY", "")
-        
+            self.api = api
+            account = self.api.get_account()
+            if account:
+                self.connected = True
+                self.status_message = "Connected to Alpaca Paper Trading"
+                self.last_equity = float(getattr(account, 'equity', 0))
+                self._daily_start_equity = self.last_equity
+                self._update_buckets()
+                if AUDIT_AVAILABLE and self.username:
+                    try:
+                        log_audit(self.username, "engine_connect", "Connected to Alpaca")
+                    except Exception:
+                        pass
+                return True
+            else:
+                self.connected = False
+                self.status_message = "Failed to get account from Alpaca"
+                return False
+        except Exception as e:
+            self.connected = False
+            self.status_message = f"Connection error: {str(e)}"
+            return False
 
-    # ==========================================
-    # BUCKET SYSTEM: SAVE / LOAD / MIGRATE
-    # ==========================================
-
-    def _load_buckets(self):
-        bucket_file = self.log_dir / "buckets.json"
-        if bucket_file.exists():
+    def start(self):
+        """Start the trading bot in a background thread."""
+        if self.running:
+            self.status_message = "Bot already running"
+            return
+        if not self.connected:
+            self.status_message = "Not connected to Alpaca"
+            return
+        self.running = True
+        self._stop_event.clear()
+        self._daily_start_equity = self.last_equity
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+        self.status_message = "Bot running"
+        if AUDIT_AVAILABLE and self.username:
             try:
-                with open(bucket_file, "r") as f:
-                    saved = json.load(f)
-                if "long_term" in saved and "dividend" not in saved:
-                    old_lt = saved.pop("long_term")
-                    div_pct = self.settings.get("dividend_pct", 0.35)
-                    gro_pct = self.settings.get("growth_pct", 0.35)
-                    total = div_pct + gro_pct if (div_pct + gro_pct) > 0 else 1
-                    self.buckets["dividend"] = {
-                        "positions": old_lt.get("positions", []),
-                        "cash_allocated": old_lt.get("cash_allocated", 0) * (div_pct / total),
-                        "total_deposited": old_lt.get("total_deposited", 0) * (div_pct / total),
-                        "total_dividends_earned": old_lt.get("total_dividends_earned", 0),
-                    }
-                    self.buckets["growth"] = {
-                        "positions": [],
-                        "cash_allocated": old_lt.get("cash_allocated", 0) * (gro_pct / total),
-                        "total_deposited": old_lt.get("total_deposited", 0) * (gro_pct / total),
-                        "profits_moved_in": 0,
-                    }
-                    if "penny" in saved:
-                        self.buckets["penny"] = saved["penny"]
-                    self.buckets["withdrawal"] = saved.get("withdrawal", self.buckets["withdrawal"])
-                    self.buckets["original_capital"] = saved.get("original_capital", self.buckets["original_capital"])
-                    self.buckets["last_deposit_date"] = saved.get("last_deposit_date")
-                    self.buckets["deposit_history"] = saved.get("deposit_history", [])
-                    self.buckets["extraction_history"] = saved.get("extraction_history", [])
-                    self.buckets["dividend_history"] = saved.get("dividend_history", [])
-                    self._log_error("Migrated buckets from 2-bucket to 3-bucket format")
-                    self._save_buckets()
+                log_audit(self.username, "bot_start", "Trading bot started")
+            except Exception:
+                pass
+
+    def stop(self):
+        """Stop the trading bot."""
+        self.running = False
+        self._stop_event.set()
+        self.status_message = "Bot stopped"
+        self._save_trade_log()
+        if AUDIT_AVAILABLE and self.username:
+            try:
+                log_audit(self.username, "bot_stop", "Trading bot stopped")
+            except Exception:
+                pass
+
+    def _run_loop(self):
+        """Main trading loop running in background thread."""
+        while self.running and not self._stop_event.is_set():
+            try:
+                market = self.is_market_open()
+                if market.get("is_open", False):
+                    self.run_cycle()
                 else:
-                    for key in self.buckets:
-                        if key in saved:
-                            self.buckets[key] = saved[key]
+                    self.status_message = f"Market closed. {market.get('day_name', '')}"
             except Exception as e:
-                self._log_error(f"Failed to load buckets.json, using defaults: {e}")
-
-    def _save_buckets(self):
-        bucket_file = self.log_dir / "buckets.json"
-        try:
-            with open(bucket_file, "w") as f:
-                json.dump(self.buckets, f, indent=2)
-        except Exception as e:
-            self._log_error(f"Save buckets error: {e}")
+                self.status_message = f"Cycle error: {str(e)}"
+            interval = self.settings.get("scan_interval_min", 5) * 60
+            self._stop_event.wait(timeout=interval)
 
     # ==========================================
-    # STOCK CLASSIFICATION (Dynamic)
-    # ==========================================
-
-    def assign_bucket(self, symbol: str) -> str:
-        penny_threshold = self.settings.get("penny_price_threshold", 5.0)
-        min_div_yield = self.settings.get("min_dividend_yield", 0.03)
-        symbol_upper = symbol.upper()
-        cache_key = symbol_upper
-
-        is_in_dividend_list = symbol_upper in DIVIDEND_STOCKS
-        is_in_growth_list = symbol_upper in GROWTH_STOCKS or symbol_upper in US_LONG_TERM
-
-        if cache_key in self._stock_info_cache:
-            cached = self._stock_info_cache[cache_key]
-            age_hours = (datetime.now() - cached["timestamp"]).total_seconds() / 3600
-            if age_hours < 24 and cached.get("bucket"):
-                cached_bucket = cached.get("bucket")
-                cached_price = cached.get("price")
-
-                if cached_bucket != "dividend" and is_in_dividend_list:
-                    self._log_error(f"[BUCKET FIX] {symbol_upper} cached as '{cached_bucket}' but is in DIVIDEND_STOCKS → correcting to 'dividend'")
-                    cached["bucket"] = "dividend"
-                    return "dividend"
-
-                if cached_price is not None and cached_price < penny_threshold and cached_bucket != "penny":
-                    self._log_error(f"[BUCKET FIX] {symbol_upper} cached as '{cached_bucket}' but price ${cached_price:.2f} < ${penny_threshold:.2f} → correcting to 'penny'")
-                    cached["bucket"] = "penny"
-                    return "penny"
-
-                self._log_error(f"[BUCKET] {symbol_upper}: cache hit → {cached_bucket.upper()} (price={cached_price}, div_yield={cached.get('div_yield')}, age={age_hours:.1f}h)")
-                return cached_bucket
-
-        cached_price = None
-        cached_div_yield = None
-        if cache_key in self._stock_info_cache:
-            cached_price = self._stock_info_cache[cache_key].get("price")
-            cached_div_yield = self._stock_info_cache[cache_key].get("div_yield")
-
-        if cached_price is None and YF_AVAILABLE:
-            try:
-                ticker = yf.Ticker(symbol_upper)
-                info = ticker.info or {}
-                fresh_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-                if fresh_price is not None:
-                    cached_price = fresh_price
-                    self._log_error(f"[BUCKET] {symbol_upper}: fetched price=${cached_price:.2f} from yfinance")
-                fresh_div = info.get('dividendYield')
-                if fresh_div is not None:
-                    cached_div_yield = fresh_div
-                    self._log_error(f"[BUCKET] {symbol_upper}: fetched div_yield={cached_div_yield:.4f} ({cached_div_yield:.2%}) from yfinance")
-            except Exception as e:
-                self._log_error(f"[BUCKET] {symbol_upper}: yfinance fetch failed: {str(e)[:80]}")
-
-        if cached_price is not None and cached_div_yield is None and YF_AVAILABLE:
-            try:
-                ticker = yf.Ticker(symbol_upper)
-                info = ticker.info or {}
-                fresh_div = info.get('dividendYield')
-                if fresh_div is not None:
-                    cached_div_yield = fresh_div
-                    self._log_error(f"[BUCKET] {symbol_upper}: fetched div_yield={cached_div_yield:.4f} ({cached_div_yield:.2%}) from yfinance (second attempt)")
-            except Exception:
-                pass
-
-        if cached_price is not None and cached_price < penny_threshold:
-            bucket = "penny"
-            self._log_error(f"[BUCKET] {symbol_upper}: price=${cached_price:.2f} < ${penny_threshold:.2f} → PENNY")
-        elif cached_div_yield is not None and cached_div_yield >= min_div_yield:
-            bucket = "dividend"
-            self._log_error(f"[BUCKET] {symbol_upper}: yield={cached_div_yield:.2%} >= {min_div_yield:.2%} → DIVIDEND")
-        elif cached_price is not None and cached_price >= penny_threshold:
-            if cached_div_yield is not None and cached_div_yield > 0:
-                bucket = "growth"
-                self._log_error(f"[BUCKET] {symbol_upper}: yield={cached_div_yield:.2%} < {min_div_yield:.2%} threshold, price=${cached_price:.2f} → GROWTH")
-            else:
-                if is_in_dividend_list:
-                    bucket = "dividend"
-                    self._log_error(f"[BUCKET] {symbol_upper}: div_yield=Unknown, in DIVIDEND_STOCKS list → DIVIDEND")
-                elif is_in_growth_list:
-                    bucket = "growth"
-                    self._log_error(f"[BUCKET] {symbol_upper}: div_yield=Unknown, in GROWTH_STOCKS list → GROWTH")
-                else:
-                    bucket = "growth"
-                    self._log_error(f"[BUCKET] {symbol_upper}: div_yield=Unknown, not in any list, price=${cached_price:.2f} → GROWTH (default)")
-        else:
-            if is_in_dividend_list:
-                bucket = "dividend"
-                self._log_error(f"[BUCKET] {symbol_upper}: no price data, in DIVIDEND_STOCKS list → DIVIDEND")
-            elif is_in_growth_list:
-                bucket = "growth"
-                self._log_error(f"[BUCKET] {symbol_upper}: no price data, in GROWTH_STOCKS/US_LONG_TERM list → GROWTH")
-            else:
-                bucket = "growth"
-                self._log_error(f"[BUCKET] {symbol_upper}: no price data, not in any list → GROWTH (default)")
-
-        self._stock_info_cache[cache_key] = {
-            "price": cached_price,
-            "div_yield": cached_div_yield,
-            "bucket": bucket,
-            "timestamp": datetime.now()
-        }
-        return bucket
-
-    def classify_stock(self, symbol: str) -> str:
-        penny_threshold = self.settings.get("penny_price_threshold", 5.0)
-        min_div_yield = self.settings.get("min_dividend_yield", 0.03)
-        symbol_upper = symbol.upper()
-        price = None
-        div_yield = None
-        if self.api and self.connected:
-            try:
-                quote = self.api.get_latest_quote(symbol_upper)
-                if quote:
-                    price = (float(quote.ask_price) + float(quote.bid_price)) / 2
-            except Exception:
-                pass
-        if YF_AVAILABLE:
-            try:
-                ticker = yf.Ticker(symbol_upper)
-                info = ticker.info or {}
-                if price is None:
-                    price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-                div_yield = info.get('dividendYield')
-            except Exception:
-                pass
-        if div_yield is None:
-            if symbol_upper in DIVIDEND_STOCKS:
-                div_yield = 0.03
-            elif symbol_upper in GROWTH_STOCKS:
-                div_yield = 0.0
-        if price is not None and price < penny_threshold:
-            bucket = "penny"
-        elif div_yield is not None and div_yield >= min_div_yield:
-            bucket = "dividend"
-        elif price is not None and price >= penny_threshold:
-            bucket = "growth"
-        else:
-            if symbol_upper in DIVIDEND_STOCKS:
-                bucket = "dividend"
-            elif symbol_upper in GROWTH_STOCKS or symbol_upper in US_LONG_TERM:
-                bucket = "growth"
-            else:
-                bucket = "penny"
-        self._stock_info_cache[symbol_upper] = {"price": price, "div_yield": div_yield, "bucket": bucket, "timestamp": datetime.now()}
-        return bucket
-
-    def get_bucket_icon(self, bucket: str) -> str:
-        return BUCKET_ICONS.get(bucket, "⚪")
-
-    def get_bucket_settings(self, bucket: str) -> dict:
-        key = f"{bucket}_settings"
-        bucket_specific = self.settings.get(key, {})
-        defaults = {
-            "stop_loss_pct": self.settings.get("stop_loss_pct", 0.05),
-            "take_profit_pct": self.settings.get("take_profit_pct", 0.10),
-            "trailing_stop_pct": self.settings.get("trailing_stop_pct", 0.03),
-            "max_position_pct": self.settings.get("max_position_pct", 0.08),
-            "rsi_oversold": self.settings.get("rsi_oversold", 30),
-            "rsi_overbought": self.settings.get("rsi_overbought", 65),
-            "min_confidence": self.settings.get("min_confidence", 0.25),
-            "min_rvol": self.settings.get("min_rvol", 1.0),
-        }
-        defaults.update(bucket_specific)
-        return defaults
-
-    def debug_bucket(self, symbol: str) -> Dict:
-        penny_threshold = self.settings.get("penny_price_threshold", 5.0)
-        min_div_yield = self.settings.get("min_dividend_yield", 0.03)
-        symbol_upper = symbol.upper()
-
-        debug = {
-            "symbol": symbol_upper,
-            "penny_threshold": penny_threshold,
-            "min_div_yield": min_div_yield,
-            "in_dividend_list": symbol_upper in DIVIDEND_STOCKS,
-            "in_growth_list": symbol_upper in GROWTH_STOCKS,
-            "in_long_term_list": symbol_upper in US_LONG_TERM,
-            "cached_price": None,
-            "cached_div_yield": None,
-            "yfinance_price": None,
-            "yfinance_div_yield": None,
-            "final_bucket": None,
-            "log": [],
-        }
-
-        if symbol_upper in self._stock_info_cache:
-            cached = self._stock_info_cache[symbol_upper]
-            debug["cached_price"] = cached.get("price")
-            debug["cached_div_yield"] = cached.get("div_yield")
-            debug["cached_bucket"] = cached.get("bucket")
-            debug["cached_age_hours"] = (datetime.now() - cached["timestamp"]).total_seconds() / 3600
-            debug["log"].append(f"Cache hit: price={cached.get('price')}, div_yield={cached.get('div_yield')}, bucket={cached.get('bucket')}")
-
-        if YF_AVAILABLE:
-            try:
-                ticker = yf.Ticker(symbol_upper)
-                info = ticker.info or {}
-                price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose')
-                div_yield = info.get('dividendYield')
-                debug["yfinance_price"] = price
-                debug["yfinance_div_yield"] = div_yield
-                debug["log"].append(f"yfinance: price={price}, div_yield={div_yield}")
-            except Exception as e:
-                debug["log"].append(f"yfinance error: {str(e)[:80]}")
-        else:
-            debug["log"].append("yfinance not available")
-
-        old_cache = self._stock_info_cache.pop(symbol_upper, None)
-        bucket = self.assign_bucket(symbol)
-        debug["final_bucket"] = bucket
-        debug["log"].append(f"Final classification: {bucket}")
-
-        if old_cache:
-            self._stock_info_cache[symbol_upper] = old_cache
-
-        return debug
-
-    def invalidate_bucket_cache(self):
-        self._stock_info_cache = {}
-
-    # ==========================================
-    # BUCKET SYSTEM: DEPOSIT MONEY
-    # ==========================================
-
-    def deposit_money(self, amount: float) -> Dict:
-        div_pct = self.settings.get("dividend_pct", 0.35)
-        gro_pct = self.settings.get("growth_pct", 0.35)
-        pen_pct = self.settings.get("penny_pct", 0.30)
-        dividend_amount = round(amount * div_pct, 2)
-        growth_amount = round(amount * gro_pct, 2)
-        penny_amount = round(amount * pen_pct, 2)
-        self.buckets["dividend"]["total_deposited"] += dividend_amount
-        self.buckets["dividend"]["cash_allocated"] += dividend_amount
-        self.buckets["growth"]["total_deposited"] += growth_amount
-        self.buckets["growth"]["cash_allocated"] += growth_amount
-        self.buckets["penny"]["total_deposited"] += penny_amount
-        self.buckets["penny"]["cash_allocated"] += penny_amount
-        entry = {"date": datetime.now().isoformat(), "amount": amount, "dividend": dividend_amount, "growth": growth_amount, "penny": penny_amount, "div_pct": div_pct, "gro_pct": gro_pct, "pen_pct": pen_pct}
-        self.buckets["deposit_history"].append(entry)
-        self.buckets["last_deposit_date"] = datetime.now().date().isoformat()
-        self._save_buckets()
-        if AUDIT_AVAILABLE:
-            try:
-                log_deposit_audit("system", amount, {"dividend": dividend_amount, "growth": growth_amount, "penny": penny_amount})
-            except Exception:
-                pass
-        return {"status": "success", "amount": amount, "dividend": dividend_amount, "growth": growth_amount, "penny": penny_amount, "message": f"Deposited ${amount:,.2f}: 🟢 ${dividend_amount:,.2f} Dividend, 🔵 ${growth_amount:,.2f} Growth, 🔴 ${penny_amount:,.2f} Penny"}
-
-    # ==========================================
-    # BUCKET SYSTEM: GET OVERVIEW
-    # ==========================================
-
-    def get_bucket_overview(self) -> Dict:
-        overview = {
-            "dividend": {"value": 0, "positions": 0, "cash": 0, "total_deposited": 0, "unrealized_pl": 0, "dividends_earned": 0},
-            "growth": {"value": 0, "positions": 0, "cash": 0, "total_deposited": 0, "unrealized_pl": 0, "profits_moved_in": 0},
-            "penny": {"value": 0, "positions": 0, "cash": 0, "total_deposited": 0, "unrealized_pl": 0, "profits_to_growth": 0},
-            "withdrawal": {"available": 0, "total_withdrawn": 0, "dividends_received": 0, "profits_extracted": 0},
-            "original_capital": self.buckets.get("original_capital", self.settings.get("original_capital", 100000)),
-            "total_profit": 0, "total_portfolio": 0, "withdrawable": 0, "profit_threshold_hit": False,
-        }
-        positions = self.get_positions()
-        account = self.get_account_info()
-        dividend_value = growth_value = penny_value = 0
-        dividend_positions = growth_positions = penny_positions = []
-        for pos in positions:
-            symbol = pos["symbol"]
-            bucket = self.assign_bucket(symbol)
-            pos_value = float(pos.get("market_value", 0))
-            if bucket == "dividend":
-                dividend_value += pos_value
-                dividend_positions.append(pos)
-            elif bucket == "growth":
-                growth_value += pos_value
-                growth_positions.append(pos)
-            else:
-                penny_value += pos_value
-                penny_positions.append(pos)
-        total_equity = float(account.get("equity", 0)) if "error" not in account else 0
-        total_cash = float(account.get("cash", 0)) if "error" not in account else 0
-        original_capital = overview["original_capital"]
-        withdrawal_cash = self.buckets["withdrawal"]["available"]
-        trading_cash = max(0, total_cash - withdrawal_cash)
-        div_pct = self.settings.get("dividend_pct", 0.35)
-        gro_pct = self.settings.get("growth_pct", 0.35)
-        pen_pct = self.settings.get("penny_pct", 0.30)
-        total_pct = div_pct + gro_pct + pen_pct
-        if total_pct <= 0:
-            total_pct = 1
-        overview["dividend"]["value"] = round(dividend_value + (trading_cash * div_pct / total_pct), 2)
-        overview["dividend"]["positions"] = len(dividend_positions)
-        overview["dividend"]["position_list"] = dividend_positions
-        overview["dividend"]["cash"] = round(trading_cash * div_pct / total_pct, 2)
-        overview["dividend"]["total_deposited"] = self.buckets["dividend"]["total_deposited"]
-        overview["dividend"]["dividends_earned"] = self.buckets["dividend"].get("total_dividends_earned", 0)
-        if dividend_value > 0:
-            dv_cost = sum(float(p.get("avg_entry_price", 0)) * float(p.get("qty", 0)) for p in dividend_positions)
-            overview["dividend"]["unrealized_pl"] = round(dividend_value - dv_cost, 2)
-        overview["growth"]["value"] = round(growth_value + (trading_cash * gro_pct / total_pct), 2)
-        overview["growth"]["positions"] = len(growth_positions)
-        overview["growth"]["position_list"] = growth_positions
-        overview["growth"]["cash"] = round(trading_cash * gro_pct / total_pct, 2)
-        overview["growth"]["total_deposited"] = self.buckets["growth"]["total_deposited"]
-        overview["growth"]["profits_moved_in"] = self.buckets["growth"].get("profits_moved_in", 0)
-        if growth_value > 0:
-            gr_cost = sum(float(p.get("avg_entry_price", 0)) * float(p.get("qty", 0)) for p in growth_positions)
-            overview["growth"]["unrealized_pl"] = round(growth_value - gr_cost, 2)
-        overview["penny"]["value"] = round(penny_value + (trading_cash * pen_pct / total_pct), 2)
-        overview["penny"]["positions"] = len(penny_positions)
-        overview["penny"]["position_list"] = penny_positions
-        overview["penny"]["cash"] = round(trading_cash * pen_pct / total_pct, 2)
-        overview["penny"]["total_deposited"] = self.buckets["penny"]["total_deposited"]
-        overview["penny"]["profits_to_growth"] = self.buckets["penny"].get("profits_to_growth", 0)
-        if penny_value > 0:
-            pn_cost = sum(float(p.get("avg_entry_price", 0)) * float(p.get("qty", 0)) for p in penny_positions)
-            overview["penny"]["unrealized_pl"] = round(penny_value - pn_cost, 2)
-        overview["withdrawal"]["available"] = withdrawal_cash
-        overview["withdrawal"]["total_withdrawn"] = self.buckets["withdrawal"]["total_withdrawn"]
-        overview["withdrawal"]["dividends_received"] = self.buckets["withdrawal"]["dividends_received"]
-        overview["withdrawal"]["profits_extracted"] = self.buckets["withdrawal"]["profits_extracted"]
-        overview["total_portfolio"] = round(total_equity, 2)
-        overview["total_profit"] = round(total_equity - original_capital, 2)
-        overview["withdrawable"] = withdrawal_cash
-        profit_pct = (total_equity / original_capital - 1) * 100 if original_capital > 0 else 0
-        use_pct = self.settings.get("use_pct_threshold", False)
-        if use_pct:
-            threshold_hit = profit_pct >= (self.settings.get("profit_threshold_pct", 0.20) * 100)
-        else:
-            threshold_hit = overview["total_profit"] >= self.settings.get("profit_threshold_amount", 20000)
-        overview["profit_threshold_hit"] = threshold_hit
-        overview["profit_pct"] = round(profit_pct, 2)
-        overview["deposit_history"] = self.buckets.get("deposit_history", [])
-        overview["extraction_history"] = self.buckets.get("extraction_history", [])
-        overview["dividend_history"] = self.buckets.get("dividend_history", [])
-        return overview
-
-    # ==========================================
-    # BUCKET SYSTEM: EXTRACT PROFITS
-    # ==========================================
-
-    def extract_profits(self) -> Dict:
-        overview = self.get_bucket_overview()
-        total_profit = overview["total_profit"]
-        original_capital = overview["original_capital"]
-        use_pct = self.settings.get("use_pct_threshold", False)
-        if use_pct:
-            threshold_pct = self.settings.get("profit_threshold_pct", 0.20)
-            threshold_amount = original_capital * threshold_pct
-        else:
-            threshold_amount = self.settings.get("profit_threshold_amount", 20000)
-        if total_profit < threshold_amount:
-            return {"status": "below_threshold", "message": f"Profit ${total_profit:,.2f} is below threshold ${threshold_amount:,.2f}", "profit": total_profit, "threshold": threshold_amount}
-        positions = self.get_positions()
-        if not positions:
-            return {"status": "no_positions", "message": "No positions to sell"}
-        profitable = []
-        for pos in positions:
-            pl_pct = float(pos.get("unrealized_plpc", 0))
-            if pl_pct > 0:
-                profitable.append({"symbol": pos["symbol"], "pl_pct": pl_pct, "market_value": float(pos.get("market_value", 0)), "qty": float(pos.get("qty", 0)), "current_price": float(pos.get("current_price", 0)), "entry_price": float(pos.get("avg_entry_price", 0))})
-        profitable.sort(key=lambda x: x["pl_pct"], reverse=True)
-        amount_to_free = threshold_amount
-        sold = []
-        remaining = amount_to_free
-        for pos in profitable:
-            if remaining <= 0:
-                break
-            try:
-                result = self.close_position(pos["symbol"], reason=f"Profit extraction: {pos['pl_pct']:.1%} gain")
-                if "error" not in result:
-                    freed = pos["market_value"]
-                    remaining -= freed
-                    sold.append({"symbol": pos["symbol"], "shares": pos["qty"], "profit_pct": pos["pl_pct"], "value_freed": round(freed, 2), "bucket": self.assign_bucket(pos["symbol"])})
-            except Exception as e:
-                self._log_error(f"Profit extraction sell error: {e}")
-        total_freed = 0
-        total_skimmed = 0
-        for s in sold:
-            # Apply profit skimming to each sold position
-            skim_result = self._apply_profit_skimming(s["symbol"], s["value_freed"], s["bucket"])
-            total_freed += skim_result["sell_value"]
-            total_skimmed += skim_result["skimmed_to_withdrawal"]
-        extraction_entry = {"date": datetime.now().isoformat(), "profit_at_extraction": total_profit, "amount_extracted": total_freed, "threshold": threshold_amount, "positions_sold": sold}
-        self.buckets["extraction_history"].append(extraction_entry)
-        self._save_buckets()
-        return {"status": "extracted", "message": f"Extracted ${total_freed:,.2f} profit from {len(sold)} positions", "amount_extracted": total_freed, "positions_sold": sold, "withdrawal_pot": self.buckets["withdrawal"]["available"]}
-
-    # ==========================================
-    # NEW: SELL EVERYTHING
-    # ==========================================
-
-    def sell_everything(self) -> Dict:
-        """Sell all open positions and move proceeds to Withdrawal Pot (LOCKED from trading)."""
-        if not self.api or not self.connected:
-            return {"status": "error", "message": "Not connected to Alpaca"}
-
-        positions = self.get_positions()
-        if not positions:
-            return {"status": "no_positions", "message": "No open positions to sell"}
-
-        sold = []
-        total_freed = 0.0
-
-        for pos in positions:
-            symbol = pos["symbol"]
-            bucket = self.assign_bucket(symbol)
-            try:
-                result = self.close_position(symbol, reason="Sell Everything: Moving to Withdrawal Pot")
-                if "error" not in result:
-                    freed = float(pos.get("market_value", 0))
-                    total_freed += freed
-                    sold.append({
-                        "symbol": symbol,
-                        "market_value": freed,
-                        "pl_pct": float(pos.get("unrealized_plpc", 0)),
-                        "bucket": bucket
-                    })
-            except Exception as e:
-                self._log_error(f"Sell Everything error for {symbol}: {e}")
-
-        # Apply profit skimming logic
-        total_to_withdrawal = 0
-        total_to_reinvest = 0
-        if total_freed > 0:
-            for pos in sold:
-                skim_result = self._apply_profit_skimming(pos["symbol"], pos["market_value"], pos["bucket"])
-                total_to_withdrawal += skim_result["skimmed_to_withdrawal"]
-                total_to_reinvest += skim_result["reinvested_to_bucket"]
-
-            extraction_entry = {
-                "date": datetime.now().isoformat(),
-                "type": "sell_everything",
-                "total_freed": total_freed,
-                "positions_sold": len(sold),
-            }
-            self.buckets["extraction_history"].append(extraction_entry)
-            self._save_buckets()
-
-        return {
-            "status": "sold",
-            "message": f"Sold {len(sold)} positions, ${total_freed:,.2f} moved to Withdrawal Pot (🔒 LOCKED)",
-            "positions_sold": sold,
-            "total_freed": total_freed,
-            "withdrawal_pot": self.buckets["withdrawal"]["available"]
-        }
-
-    # ==========================================
-    # NEW: MOVE FROM WITHDRAWAL
-    # ==========================================
-
-    def move_from_withdrawal(self, amount: float, target_bucket: str) -> Dict:
-        """Move money from Withdrawal Pot back to a trading bucket."""
-        withdrawal_available = self.buckets["withdrawal"]["available"]
-
-        if amount <= 0:
-            return {"status": "error", "message": "Amount must be positive"}
-
-        # Allow small rounding tolerance (e.g., $0.01) for currency rounding
-        if amount > withdrawal_available + 0.01:
-            return {"status": "error", "message": f"Amount ${amount:,.2f} exceeds Withdrawal Pot balance ${withdrawal_available:,.2f}"}
-
-        # Cap amount to actual available (handles rounding up from UI)
-        actual_amount = min(amount, withdrawal_available)
-
-        if target_bucket not in ["dividend", "growth", "penny"]:
-            return {"status": "error", "message": f"Invalid bucket: {target_bucket}"}
-
-        self.buckets["withdrawal"]["available"] -= actual_amount
-        self.buckets[target_bucket]["cash_allocated"] += actual_amount
-        self.buckets[target_bucket]["total_deposited"] += actual_amount
-
-        entry = {
-            "date": datetime.now().isoformat(),
-            "amount": actual_amount,
-            "from": "withdrawal",
-            "to": target_bucket,
-            "type": "move_from_withdrawal"
-        }
-        self.buckets["deposit_history"].append(entry)
-        self._save_buckets()
-
-        bucket_icon = BUCKET_ICONS.get(target_bucket, "⚪")
-        return {
-            "status": "success",
-            "message": f"Moved ${actual_amount:,.2f} from 🟡 Withdrawal → {bucket_icon} {target_bucket.title()}",
-            "amount_moved": actual_amount,
-            "target_bucket": target_bucket,
-            "withdrawal_remaining": self.buckets["withdrawal"]["available"]
-        }
-
-    # ==========================================
-    # NEW: REDISTRIBUTE FROM WITHDRAWAL
-    # ==========================================
-
-    def redistribute_from_withdrawal(self) -> Dict:
-        """Redistribute Withdrawal Pot across all 3 buckets based on allocation %."""
-        withdrawal_available = self.buckets["withdrawal"]["available"]
-
-        if withdrawal_available <= 0:
-            return {"status": "error", "message": "No money in Withdrawal Pot to redistribute"}
-
-        div_pct = self.settings.get("dividend_pct", 0.35)
-        gro_pct = self.settings.get("growth_pct", 0.35)
-        pen_pct = self.settings.get("penny_pct", 0.30)
-        total_pct = div_pct + gro_pct + pen_pct
-        if total_pct <= 0:
-            return {"status": "error", "message": "Allocation percentages must add up to more than 0%"}
-
-        div_amount = round(withdrawal_available * div_pct / total_pct, 2)
-        gro_amount = round(withdrawal_available * gro_pct / total_pct, 2)
-        pen_amount = round(withdrawal_available * pen_pct / total_pct, 2)
-
-        # Adjust for rounding
-        remainder = round(withdrawal_available - div_amount - gro_amount - pen_amount, 2)
-        if remainder > 0:
-            pen_amount += remainder
-
-        self.buckets["withdrawal"]["available"] = 0
-        self.buckets["dividend"]["cash_allocated"] += div_amount
-        self.buckets["dividend"]["total_deposited"] += div_amount
-        self.buckets["growth"]["cash_allocated"] += gro_amount
-        self.buckets["growth"]["total_deposited"] += gro_amount
-        self.buckets["penny"]["cash_allocated"] += pen_amount
-        self.buckets["penny"]["total_deposited"] += pen_amount
-
-        entry = {
-            "date": datetime.now().isoformat(),
-            "amount": withdrawal_available,
-            "dividend": div_amount,
-            "growth": gro_amount,
-            "penny": pen_amount,
-            "type": "redistribute_from_withdrawal"
-        }
-        self.buckets["deposit_history"].append(entry)
-        self._save_buckets()
-
-        return {
-            "status": "success",
-            "message": f"Redistributed ${withdrawal_available:,.2f} from Withdrawal: 🟢 ${div_amount:,.2f} Dividend, 🔵 ${gro_amount:,.2f} Growth, 🔴 ${pen_amount:,.2f} Penny",
-            "dividend": div_amount,
-            "growth": gro_amount,
-            "penny": pen_amount,
-            "total_redistributed": withdrawal_available,
-            "withdrawal_remaining": 0
-        }
-
-    # ==========================================
-    # BUCKET SYSTEM: MOVE PROFITS
-    # ==========================================
-
-    def move_profits(self) -> Dict:
-        results = {}
-        if self.settings.get("penny_profits_to_growth", True):
-            penny_profits = self._calculate_bucket_profits("penny")
-            if penny_profits > 0:
-                self.buckets["growth"]["profits_moved_in"] = self.buckets["growth"].get("profits_moved_in", 0) + penny_profits
-                self.buckets["penny"]["profits_to_growth"] = self.buckets["penny"].get("profits_to_growth", 0) + penny_profits
-                self.buckets["growth"]["cash_allocated"] = self.buckets["growth"].get("cash_allocated", 0) + penny_profits
-                results["penny_to_growth"] = penny_profits
-        if self.settings.get("growth_profits_to_dividend", True):
-            growth_profits = self._calculate_bucket_profits("growth")
-            if growth_profits > 0:
-                self.buckets["dividend"]["cash_allocated"] = self.buckets["dividend"].get("cash_allocated", 0) + growth_profits
-                results["growth_to_dividend"] = growth_profits
-        self._save_buckets()
-        return results
-
-    def _calculate_bucket_profits(self, bucket: str) -> float:
-        total_profit = 0.0
-        for t in self.trade_log:
-            if t.get("side") in ["sell", "close"] and t.get("bucket") == bucket:
-                symbol = t.get("symbol", "")
-                buy_entry = None
-                for bt in reversed(self.trade_log):
-                    if bt.get("symbol") == symbol and bt.get("side") == "buy":
-                        buy_entry = bt
-                        break
-                if buy_entry:
-                    buy_price = float(buy_entry.get("price", 0))
-                    sell_price = float(t.get("price", 0))
-                    qty = float(t.get("qty", 0))
-                    if buy_price > 0:
-                        profit = (sell_price - buy_price) * qty
-                        if profit > 0:
-                            total_profit += profit
-        return total_profit
-
-    # ==========================================
-    # BUCKET SYSTEM: PROFIT SKIMMING (NEW)
-    # ==========================================
-    def _apply_profit_skimming(self, symbol: str, sell_value: float, bucket: str) -> Dict:
-        """
-        When a position is sold at a profit, this calculates how much goes to 
-        the Withdrawal pot (locked) vs back to the trading bucket (reinvest).
-        Skim Percentage: 1.0 (100%) = All profit locked, 0.0 = All profit reinvested.
-        """
-        skim_pct = self.settings.get("profit_skim_pct", 1.0)
-        principal = 0.0
-        
-        # Find the original buy price to calculate profit
-        for t in reversed(self.trade_log):
-            if t.get("symbol") == symbol and t.get("side") == "buy":
-                buy_price = float(t.get("price", 0))
-                qty = float(t.get("qty", 0))
-                if buy_price > 0 and qty > 0:
-                    principal = buy_price * qty
-                break
-                
-        profit = max(0, sell_value - principal)
-        
-        skim_amount = profit * skim_pct
-        reinvest_amount = sell_value - skim_amount
-        
-        # Move skimmed profit to Withdrawal bucket
-        if skim_amount > 0:
-            self.buckets["withdrawal"]["available"] += skim_amount
-            self.buckets["withdrawal"]["profits_extracted"] += skim_amount
-        
-        # Move principal + remaining profit back to the trading bucket
-        if reinvest_amount > 0 and bucket in ["dividend", "growth", "penny"]:
-            self.buckets[bucket]["cash_allocated"] += reinvest_amount
-            
-        return {
-            "status": "success",
-            "sell_value": round(sell_value, 2),
-            "principal": round(principal, 2),
-            "profit": round(profit, 2),
-            "skim_pct": skim_pct,
-            "skimmed_to_withdrawal": round(skim_amount, 2),
-            "reinvested_to_bucket": round(reinvest_amount, 2),
-            "bucket": bucket
-        }
-
-    # ==========================================
-    # BUCKET SYSTEM: CHECK DIVIDENDS
-    # ==========================================
-
-    def check_dividends(self) -> Dict:
-        if not self.api or not self.connected:
-            return {"status": "error", "message": "Not connected"}
-        try:
-            activities = self.api.get_activities(activity_types="DIV")
-            dividends_found = 0.0
-            dividend_details = []
-            for activity in activities:
-                symbol = getattr(activity, 'symbol', '')
-                amount = float(getattr(activity, 'net_amount', 0) or 0)
-                act_date = str(getattr(activity, 'date', ''))
-                if amount > 0:
-                    existing_dates = [d.get("date", "") for d in self.buckets.get("dividend_history", [])]
-                    existing_amounts = [d.get("amount", 0) for d in self.buckets.get("dividend_history", [])]
-                    is_duplicate = False
-                    for i, ed in enumerate(existing_dates):
-                        if ed == act_date and i < len(existing_amounts) and abs(existing_amounts[i] - amount) < 0.01:
-                            is_duplicate = True
-                            break
-                    if not is_duplicate:
-                        dividends_found += amount
-                        bucket = self.assign_bucket(symbol)
-                        dividend_details.append({"symbol": symbol, "amount": amount, "date": act_date, "bucket": bucket})
-                        self.buckets.setdefault("dividend_history", []).append({"date": act_date, "symbol": symbol, "amount": amount, "status": "received", "bucket": bucket, "moved_to_withdrawal": self.settings.get("dividends_to_withdrawal", True), "recorded_at": datetime.now().isoformat()})
-            if dividends_found > 0 and self.settings.get("dividends_to_withdrawal", True):
-                self.buckets["withdrawal"]["dividends_received"] += dividends_found
-                self.buckets["withdrawal"]["available"] += dividends_found
-                self.buckets["dividend"]["total_dividends_earned"] = self.buckets["dividend"].get("total_dividends_earned", 0) + dividends_found
-            self._save_buckets()
-            return {"status": "success", "dividends_found": dividends_found, "details": dividend_details, "message": f"Found ${dividends_found:,.2f} in dividends" if dividends_found > 0 else "No new dividends"}
-        except Exception as e:
-            self._log_error(f"Dividend check error: {e}")
-            return {"status": "error", "message": str(e)}
-
-    def get_dividend_history(self) -> List[Dict]:
-        return self.buckets.get("dividend_history", [])
-
-    # ==========================================
-    # BUCKET SYSTEM: GET AVAILABLE TRADING CASH
-    # ==========================================
-
-    def get_available_trading_cash(self) -> float:
-        account = self.get_account_info()
-        if "error" in account:
-            return 0
-        total_cash = float(account.get("cash", 0))
-        withdrawal_cash = self.buckets["withdrawal"]["available"]
-        return round(max(0, total_cash - withdrawal_cash), 2)
-
-    # ==========================================
-    # ALPACA UNIVERSE: AUTO BUILD WATCHLIST
-    # ==========================================
-
-    def get_alpaca_universe(self, min_price: float = 5.0, max_price: float = 500.0) -> List[Dict]:
-        if not self.api or not self.connected:
-            return []
-        try:
-            all_assets = self.api.list_assets(status='active')
-            candidates = []
-            for asset in all_assets:
-                if not asset.tradable:
-                    continue
-                symbol = asset.symbol
-                if len(symbol) > 5 or '.' in symbol or '-' in symbol:
-                    continue
-                if any(p in symbol for p in ['ETF', 'ETN', 'PRN']):
-                    continue
-                if asset.exchange not in ['NYSE', 'NASDAQ', 'ARCA', 'AMEX', 'BATS']:
-                    continue
-                candidates.append({'symbol': symbol, 'name': getattr(asset, 'name', '') or '', 'exchange': asset.exchange})
-            symbols = [c['symbol'] for c in candidates]
-            price_filtered = []
-            batch_size = 200
-            for i in range(0, len(symbols), batch_size):
-                batch = symbols[i:i + batch_size]
-                try:
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=5)
-                    bars = self.api.get_bars(batch, tradeapi.TimeFrame.Day, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), feed='iex')
-                    latest = {}
-                    for bar in bars:
-                        sym = bar.S
-                        if sym not in latest or bar.t > latest[sym]['time']:
-                            latest[sym] = {'price': bar.c, 'volume': bar.v, 'time': bar.t}
-                    for sym, data in latest.items():
-                        if min_price <= data['price'] <= max_price:
-                            price_filtered.append({'symbol': sym, 'price': round(data['price'], 2), 'volume': data['volume'], 'bucket': self.assign_bucket(sym)})
-                except Exception as e:
-                    self._log_error(f"Universe batch error: {e}")
-                    time.sleep(0.5)
-            price_filtered.sort(key=lambda x: x.get('volume', 0), reverse=True)
-            return price_filtered
-        except Exception as e:
-            self._log_error(f"Universe fetch error: {e}")
-            return []
-
-    def auto_build_watchlist(self, top_n: int = 100, min_price: float = 5.0, max_price: float = 500.0) -> List[str]:
-        universe = self.get_alpaca_universe(min_price=min_price, max_price=max_price)
-        if not universe:
-            self._log_error("Universe empty, keeping current watchlist")
-            return self.settings.get("watchlist", [])
-        watchlist = [s['symbol'] for s in universe[:top_n]]
-        for ds in DIVIDEND_STOCKS:
-            if ds not in watchlist:
-                watchlist.append(ds)
-        for gs in GROWTH_STOCKS:
-            if gs not in watchlist:
-                watchlist.append(gs)
-        manual = self.settings.get("watchlist", [])
-        for s in manual:
-            if s not in watchlist:
-                watchlist.append(s)
-        self.settings["watchlist"] = watchlist
-        self.settings["watchlist_auto"] = True
-        self.save_settings()
-        return watchlist
-
-    # ==========================================
-    # PERSISTENCE: SAVE / LOAD ALL DATA
+    # Settings (load_settings is SEPARATE from save_settings)
     # ==========================================
 
     def save_settings(self):
-        settings_file = self.log_dir / "settings.json"
+        """Save current settings to a JSON file."""
         try:
+            settings_dir = Path.home() / ".cascadetrade"
+            settings_dir.mkdir(parents=True, exist_ok=True)
+            settings_file = settings_dir / f"settings_{self.username or 'default'}.json"
             with open(settings_file, "w") as f:
-                json.dump(self.settings, f, indent=2)
+                json.dump(self.settings, f, indent=2, default=str)
+            if AUDIT_AVAILABLE and self.username:
+                try:
+                    log_audit(self.username, "settings_save", "Settings saved")
+                except Exception:
+                    pass
         except Exception as e:
-            self._log_error(f"Save settings error: {e}")
+            print(f"Error saving settings: {e}")
 
     def load_settings(self):
-        settings_file = self.log_dir / "settings.json"
-        if settings_file.exists():
-            try:
+        """Load settings from a JSON file. Separate method, NOT nested inside save_settings."""
+        try:
+            settings_dir = Path.home() / ".cascadetrade"
+            settings_file = settings_dir / f"settings_{self.username or 'default'}.json"
+            if settings_file.exists():
                 with open(settings_file, "r") as f:
-                    saved = json.load(f)
-                if "long_term_pct" in saved and "dividend_pct" not in saved:
-                    saved["dividend_pct"] = saved.get("long_term_pct", 0.60) * 0.55
-                    saved["growth_pct"] = saved.get("long_term_pct", 0.60) * 0.45
-                    saved["penny_pct"] = saved.get("penny_pct", 0.40)
-                    del saved["long_term_pct"]
-                self.settings.update(saved)
-                return True
-            except Exception:
-                return False
-        return False
+                    loaded = json.load(f)
+                merged = dict(DEFAULT_SETTINGS)
+                self._deep_merge(merged, loaded)
+                self.settings = merged
+            else:
+                self.settings = dict(DEFAULT_SETTINGS)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+            self.settings = dict(DEFAULT_SETTINGS)
+
+    def _deep_merge(self, base: dict, override: dict):
+        """Deep merge override dict into base dict, preserving nested keys."""
+        for key, value in override.items():
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                self._deep_merge(base[key], value)
+            else:
+                base[key] = value
 
     def reset_settings(self):
-        self.settings = {
-            "mode": "quick", "max_positions": 10, "max_position_pct": 0.08,
-            "daily_loss_limit_pct": 0.03, "stop_loss_pct": 0.05, "take_profit_pct": 0.15,
-            "trailing_stop_pct": 0.03, "rsi_oversold": 30, "rsi_overbought": 70,
-            "min_rvol": 1.5, "min_confidence": 0.25, "max_same_sector": 3,
-            "scan_interval_min": 8, "watchlist": US_QUICK_TURNOVER.copy(),
-            "slippage_pct": 0.05, "sec_fee_pct": 0.00002,
-            "deposit_amount": 1000, "dividend_pct": 0.35, "growth_pct": 0.35, "penny_pct": 0.30,
-            "min_dividend_yield": 0.03, "penny_price_threshold": 5.0,
-            "profit_threshold_amount": 10000, "profit_threshold_pct": 0.10,
-            "profit_skim_pct": 1.0,
-            "use_pct_threshold": True, "auto_extract_profits": True,
-            "penny_profits_to_growth": True, "growth_profits_to_dividend": True,
-            "dividends_to_withdrawal": True, "original_capital": 100000,
-            "watchlist_auto": False, "watchlist_auto_count": 100,
-            "discord_privacy_mode": True,
-            "use_advanced_signals": True, "use_multi_timeframe": False,
-            "use_vix_filter": True, "vix_max_threshold": 28.0,
-            "use_atr_position_sizing": True, "atr_risk_pct": 0.01,
-            "signal_weights": {"rsi": 1.0, "macd": 1.2, "bollinger": 0.8, "ma_cross": 1.5, "volume": 0.6, "atr": 0.5},
-            "penny_settings": {
-                "stop_loss_pct": 0.03, "take_profit_pct": 0.08, "trailing_stop_pct": 0.02,
-                "max_position_pct": 0.04, "rsi_oversold": 25, "rsi_overbought": 60,
-                "min_confidence": 0.30, "min_rvol": 1.5,
-            },
-            "growth_settings": {
-                "stop_loss_pct": 0.06, "take_profit_pct": 0.12, "trailing_stop_pct": 0.04,
-                "max_position_pct": 0.08, "rsi_oversold": 30, "rsi_overbought": 65,
-                "min_confidence": 0.25, "min_rvol": 1.0,
-            },
-            "dividend_settings": {
-                "stop_loss_pct": 0.08, "take_profit_pct": 0.15, "trailing_stop_pct": 0.05,
-                "max_position_pct": 0.08, "rsi_oversold": 35, "rsi_overbought": 70,
-                "min_confidence": 0.20, "min_rvol": 0.8,
-            },
-        }
-        self.invalidate_bucket_cache()
+        """Reset all settings to safe defaults."""
+        self.settings = dict(DEFAULT_SETTINGS)
+        self._trailing_stops = {}
         self.save_settings()
 
+    # ==========================================
+    # Trade Log Persistence
+    # ==========================================
+
     def _load_trade_log(self):
+        """Load trade log and equity snapshots from file."""
         try:
-            from core.database import load_trades_from_db
-            username = getattr(self, '_username', None)
-            if username:
-                db_trades = load_trades_from_db(username, limit=5000)
-                if db_trades:
-                    self.trade_log = db_trades
-                    return
-        except Exception as e:
-            self._log_error(f"Load trades from DB failed: {e}")
-        log_file = self.log_dir / "trade_log.json"
-        if log_file.exists():
-            try:
-                with open(log_file, "r") as f:
-                    self.trade_log = json.load(f)
-            except Exception:
+            trade_dir = Path.home() / ".cascadetrade"
+            trade_dir.mkdir(parents=True, exist_ok=True)
+            trade_file = trade_dir / f"trades_{self.username or 'default'}.json"
+            if trade_file.exists():
+                with open(trade_file, "r") as f:
+                    data = json.load(f)
+                self.trade_log = data.get("trade_log", [])
+                self.equity_snapshots = data.get("equity_snapshots", [])
+                self.cycle_count = data.get("cycle_count", 0)
+                self.daily_pnl = data.get("daily_pnl", 0.0)
+                saved_buckets = data.get("buckets", {})
+                if saved_buckets:
+                    for key in ["dividend", "growth", "penny", "withdrawal"]:
+                        if key in saved_buckets:
+                            self.buckets[key].update(saved_buckets[key])
+                    if "original_capital" in saved_buckets:
+                        self.buckets["original_capital"] = saved_buckets["original_capital"]
+                    if "last_updated" in saved_buckets:
+                        self.buckets["last_updated"] = saved_buckets["last_updated"]
+                original_capital = data.get("original_capital", 0)
+                if original_capital > 0:
+                    self.buckets["original_capital"] = original_capital
+            else:
                 self.trade_log = []
+                self.equity_snapshots = []
+        except Exception as e:
+            print(f"Error loading trade log: {e}")
+            self.trade_log = []
+            self.equity_snapshots = []
 
     def _save_trade_log(self):
-        log_file = self.log_dir / "trade_log.json"
+        """Save trade log and equity snapshots to file."""
         try:
-            with open(log_file, "w") as f:
-                json.dump(self.trade_log, f, indent=2)
-        except Exception as e:
-            self._log_error(f"Save log error: {e}")
-        try:
-            from core.database import save_trade_to_db
-            username = getattr(self, '_username', None)
-            if username and self.trade_log:
-                last_trade = self.trade_log[-1]
-                save_trade_to_db(username, last_trade)
-        except Exception as e:
-            self._log_error(f"Save trade to DB error: {e}")
-
-    def _load_equity_snapshots(self):
-        snap_file = self.log_dir / "equity_snapshots.json"
-        if snap_file.exists():
-            try:
-                with open(snap_file, "r") as f:
-                    self.equity_snapshots = json.load(f)
-            except Exception:
-                self.equity_snapshots = []
-
-    def _save_equity_snapshots(self):
-        snap_file = self.log_dir / "equity_snapshots.json"
-        try:
-            with open(snap_file, "w") as f:
-                json.dump(self.equity_snapshots[-365:], f, indent=2)
-        except Exception as e:
-            self._log_error(f"Save equity error: {e}")
-
-    def _load_signal_history(self):
-        sig_file = self.log_dir / "signal_history.json"
-        if sig_file.exists():
-            try:
-                with open(sig_file, "r") as f:
-                    self.signal_history = json.load(f)
-            except Exception:
-                self.signal_history = []
-
-    def _save_signal_history(self):
-        sig_file = self.log_dir / "signal_history.json"
-        try:
-            with open(sig_file, "w") as f:
-                json.dump(self.signal_history[-1000:], f, indent=2)
-        except Exception as e:
-            self._log_error(f"Save signal history error: {e}")
-
-    def _load_performance_metrics(self):
-        metrics_file = self.log_dir / "performance_metrics.json"
-        if metrics_file.exists():
-            try:
-                with open(metrics_file, "r") as f:
-                    self.performance_metrics = json.load(f)
-            except Exception:
-                self.performance_metrics = {}
-
-    def _save_performance_metrics(self):
-        metrics_file = self.log_dir / "performance_metrics.json"
-        try:
-            with open(metrics_file, "w") as f:
-                json.dump(self.performance_metrics, f, indent=2)
-        except Exception as e:
-            self._log_error(f"Save metrics error: {e}")
-
-    # ==========================================
-    # EQUITY SNAPSHOTS
-    # ==========================================
-
-    def record_equity_snapshot(self):
-        try:
-            today = datetime.now().date().isoformat()
-            if self.equity_snapshots and self.equity_snapshots[-1].get("date") == today:
-                snap = self.equity_snapshots[-1]
-            else:
-                snap = {"date": today}
-            account = self.get_account_info()
-            if "error" in account:
-                return
-            snap["portfolio_value"] = float(account.get("equity", 0))
-            snap["cash"] = float(account.get("cash", 0))
-            snap["buying_power"] = float(account.get("buying_power", 0))
-            snap["daily_pnl"] = round(self.daily_pnl, 2)
-            snap["positions_count"] = len(self.get_positions())
-            bucket_ov = self.get_bucket_overview()
-            snap["dividend_value"] = bucket_ov["dividend"]["value"]
-            snap["growth_value"] = bucket_ov["growth"]["value"]
-            snap["penny_value"] = bucket_ov["penny"]["value"]
-            snap["withdrawal_value"] = bucket_ov["withdrawal"]["available"]
-            snap["total_profit"] = bucket_ov["total_profit"]
-            if len(self.equity_snapshots) >= 2:
-                prev_value = self.equity_snapshots[-2].get("portfolio_value", snap["portfolio_value"])
-                if prev_value > 0:
-                    snap["daily_return_pct"] = round(((snap["portfolio_value"] - prev_value) / prev_value) * 100, 4)
-                else:
-                    snap["daily_return_pct"] = 0
-            else:
-                snap["daily_return_pct"] = 0
-            try:
-                spy_data = yf.Ticker("SPY").history(period="1d")
-                if not spy_data.empty:
-                    spy_close = float(spy_data['Close'].iloc[-1])
-                    snap["spy_price"] = round(spy_close, 2)
-                    if self._spy_start_value is None:
-                        self._spy_start_value = spy_close
-                        self._spy_start_date = today
-                    snap["spy_start_value"] = self._spy_start_value
-                    if self._spy_start_value > 0:
-                        snap["spy_return_pct"] = round(((spy_close - self._spy_start_value) / self._spy_start_value) * 100, 4)
-            except Exception:
-                pass
-            if self._portfolio_start_value is None:
-                self._portfolio_start_value = snap["portfolio_value"]
-                snap["portfolio_start_value"] = snap["portfolio_value"]
-            else:
-                snap["portfolio_start_value"] = self._portfolio_start_value
-            if self._portfolio_start_value > 0:
-                snap["portfolio_return_pct"] = round(((snap["portfolio_value"] - self._portfolio_start_value) / self._portfolio_start_value) * 100, 4)
-            if len(self.equity_snapshots) > 0 and self.equity_snapshots[-1].get("date") == today:
-                self.equity_snapshots[-1] = snap
-            else:
-                self.equity_snapshots.append(snap)
-            if "long_term_value" in snap and "dividend_value" not in snap:
-                snap["dividend_value"] = snap.pop("long_term_value", 0)
-                snap["growth_value"] = 0
-            self._save_equity_snapshots()
-        except Exception as e:
-            self._log_error(f"Equity snapshot error: {e}")
-
-    # ==========================================
-    # SIGNAL HISTORY
-    # ==========================================
-
-    def record_signal(self, signal: Dict, action: str, reason: str = ""):
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "symbol": signal.get("symbol", ""),
-            "signal_type": signal.get("signal", ""),
-            "confidence": signal.get("confidence", 0),
-            "rsi": signal.get("rsi", 0),
-            "rvol": signal.get("rvol", 0),
-            "price": signal.get("price", 0),
-            "reason": signal.get("reason", ""),
-            "action_taken": action,
-            "rejection_reason": reason if action == "rejected" else "",
-            "tier": self._get_tier(signal),
-            "sector": SECTOR_MAP.get(signal.get("symbol", ""), "Unknown"),
-            "bucket": self.assign_bucket(signal.get("symbol", "")),
-        }
-        self.signal_history.append(entry)
-        self._save_signal_history()
-
-    def _get_tier(self, signal: Dict) -> str:
-        rsi = signal.get("rsi", 50)
-        rvol = signal.get("rvol", 0)
-        oversold = self.settings["rsi_oversold"]
-        overbought = self.settings["rsi_overbought"]
-        min_rvol = self.settings["min_rvol"]
-        if signal.get("signal") == "BUY":
-            if rsi < oversold and rvol >= min_rvol:
-                return "Tier 1"
-            elif rsi < (oversold + 5) and rvol >= (min_rvol * 1.3):
-                return "Tier 2"
-            else:
-                return "Tier 3"
-        elif signal.get("signal") == "SELL":
-            if rsi > overbought and rvol >= min_rvol:
-                return "Tier 1"
-            elif rsi > (overbought - 5) and rvol >= (min_rvol * 1.3):
-                return "Tier 2"
-            else:
-                return "Tier 3"
-        return "Unknown"
-
-    # ==========================================
-    # PERFORMANCE METRICS
-    # ==========================================
-
-    def calculate_performance(self) -> Dict:
-        metrics = {
-            "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
-            "win_rate": 0, "avg_win_pct": 0, "avg_loss_pct": 0,
-            "total_return_pct": 0, "spy_return_pct": 0, "outperformance_pct": 0,
-            "max_drawdown_pct": 0, "sharpe_ratio": 0, "profit_factor": 0,
-            "avg_holding_days": 0, "max_consecutive_wins": 0,
-            "max_consecutive_losses": 0, "current_streak": "",
-            "by_tier": {"Tier 1": {"trades": 0, "wins": 0, "return_pct": 0}, "Tier 2": {"trades": 0, "wins": 0, "return_pct": 0}, "Tier 3": {"trades": 0, "wins": 0, "return_pct": 0}},
-            "by_sector": {},
-            "by_bucket": {"dividend": {"trades": 0, "wins": 0, "return_pct": 0}, "growth": {"trades": 0, "wins": 0, "return_pct": 0}, "penny": {"trades": 0, "wins": 0, "return_pct": 0}},
-            "signals_found": 0, "signals_executed": 0, "signals_rejected": 0,
-            "rejection_rate": 0, "net_cost_impact_pct": 0,
-            "total_slippage": 0, "total_fees": 0,
-            "equity_curve": [], "daily_returns": [],
-            "worst_day_pct": 0, "best_day_pct": 0,
-            "withdrawal_pot": 0, "total_profits_extracted": 0,
-            "total_dividends_earned": 0,
-            "sortino_ratio": 0, "calmar_ratio": 0, "omega_ratio": 0,
-            "calculation_date": datetime.now().isoformat(),
-        }
-        completed = []
-        buys = {}
-        for t in self.trade_log:
-            if t.get("side") == "buy":
-                buys[t["symbol"]] = {
-                    "entry_price": t.get("price", 0), "entry_time": t.get("timestamp", ""),
-                    "qty": t.get("qty", 0), "confidence": t.get("confidence", 0),
-                    "reason": t.get("reason", ""), "estimated_cost": t.get("estimated_cost", 0),
-                    "bucket": t.get("bucket", self.assign_bucket(t["symbol"])),
-                }
-            elif t.get("side") in ["sell", "close"]:
-                if t["symbol"] in buys:
-                    buy_info = buys[t["symbol"]]
-                    entry = buy_info["entry_price"]
-                    exit_p = t.get("price", 0)
-                    if entry > 0 and exit_p > 0:
-                        ret_pct = ((exit_p - entry) / entry) * 100
-                        slippage_cost = entry * (self.settings.get("slippage_pct", 0.05) / 100) * buy_info["qty"]
-                        slippage_cost += exit_p * (self.settings.get("slippage_pct", 0.05) / 100) * t.get("qty", buy_info["qty"])
-                        sec_fee = exit_p * (self.settings.get("sec_fee_pct", 0.00002) / 100) * t.get("qty", buy_info["qty"])
-                        net_ret_pct = ret_pct - (self.settings.get("slippage_pct", 0.05) * 2)
-                        completed.append({
-                            "symbol": t["symbol"], "entry_price": entry, "exit_price": exit_p,
-                            "return_pct": ret_pct, "net_return_pct": net_ret_pct,
-                            "entry_time": buy_info["entry_time"], "exit_time": t.get("timestamp", ""),
-                            "confidence": buy_info["confidence"], "side": t.get("side", ""),
-                            "reason": t.get("reason", ""), "slippage": slippage_cost, "fees": sec_fee,
-                            "bucket": buy_info.get("bucket", "penny"),
-                        })
-                        del buys[t["symbol"]]
-        metrics["total_trades"] = len(completed)
-        wins = [t for t in completed if t["return_pct"] > 0]
-        losses = [t for t in completed if t["return_pct"] <= 0]
-        metrics["winning_trades"] = len(wins)
-        metrics["losing_trades"] = len(losses)
-        if completed:
-            metrics["win_rate"] = round(len(wins) / len(completed) * 100, 1)
-            metrics["avg_win_pct"] = round(sum(t["return_pct"] for t in wins) / len(wins), 2) if wins else 0
-            metrics["avg_loss_pct"] = round(sum(t["return_pct"] for t in losses) / len(losses), 2) if losses else 0
-            total_wins = sum(t["return_pct"] for t in wins)
-            total_losses = abs(sum(t["return_pct"] for t in losses))
-            metrics["profit_factor"] = round(total_wins / total_losses, 2) if total_losses > 0 else float('inf') if total_wins > 0 else 0
-            metrics["total_slippage"] = round(sum(t["slippage"] for t in completed), 2)
-            metrics["total_fees"] = round(sum(t["fees"] for t in completed), 4)
-            metrics["net_cost_impact_pct"] = round(metrics["total_slippage"] + metrics["total_fees"], 4)
-            streak = 0; max_wins = 0; max_losses = 0; current_type = None
-            for t in completed:
-                if t["return_pct"] > 0:
-                    if current_type == "win": streak += 1
-                    else: streak = 1; current_type = "win"
-                    max_wins = max(max_wins, streak)
-                else:
-                    if current_type == "loss": streak += 1
-                    else: streak = 1; current_type = "loss"
-                    max_losses = max(max_losses, streak)
-            metrics["max_consecutive_wins"] = max_wins
-            metrics["max_consecutive_losses"] = max_losses
-            metrics["current_streak"] = f"{max_wins}W / {max_losses}L"
-            for t in completed:
-                tier = "Tier 2"
-                for sig in reversed(self.signal_history):
-                    if sig.get("symbol") == t["symbol"] and sig.get("action_taken") == "executed":
-                        tier = sig.get("tier", "Tier 2"); break
-                if tier not in metrics["by_tier"]: tier = "Tier 2"
-                metrics["by_tier"][tier]["trades"] += 1
-                if t["return_pct"] > 0: metrics["by_tier"][tier]["wins"] += 1
-                metrics["by_tier"][tier]["return_pct"] += t["return_pct"]
-            for t in completed:
-                sector = SECTOR_MAP.get(t["symbol"], "Unknown")
-                if sector not in metrics["by_sector"]: metrics["by_sector"][sector] = {"trades": 0, "wins": 0, "return_pct": 0}
-                metrics["by_sector"][sector]["trades"] += 1
-                if t["return_pct"] > 0: metrics["by_sector"][sector]["wins"] += 1
-                metrics["by_sector"][sector]["return_pct"] += t["return_pct"]
-            for t in completed:
-                bucket = t.get("bucket", "penny")
-                if bucket == "long_term": bucket = "dividend"
-                if bucket not in metrics["by_bucket"]: bucket = "penny"
-                metrics["by_bucket"][bucket]["trades"] += 1
-                if t["return_pct"] > 0: metrics["by_bucket"][bucket]["wins"] += 1
-                metrics["by_bucket"][bucket]["return_pct"] += t["return_pct"]
-        if len(self.equity_snapshots) >= 2:
-            values = [s["portfolio_value"] for s in self.equity_snapshots if "portfolio_value" in s]
-            if values:
-                metrics["total_return_pct"] = round(((values[-1] - values[0]) / values[0]) * 100, 2)
-                spy_returns = [s for s in self.equity_snapshots if "spy_return_pct" in s]
-                if spy_returns: metrics["spy_return_pct"] = spy_returns[-1]["spy_return_pct"]
-                metrics["outperformance_pct"] = round(metrics["total_return_pct"] - metrics["spy_return_pct"], 2)
-                peak = values[0]; max_dd = 0
-                for v in values:
-                    if v > peak: peak = v
-                    dd = ((peak - v) / peak) * 100
-                    max_dd = max(max_dd, dd)
-                metrics["max_drawdown_pct"] = round(max_dd, 2)
-                daily_returns = []
-                for i in range(1, len(values)):
-                    if values[i-1] > 0:
-                        daily_returns.append((values[i] - values[i-1]) / values[i-1])
-                if daily_returns:
-                    metrics["daily_returns"] = [round(r * 100, 4) for r in daily_returns]
-                    avg_ret = sum(daily_returns) / len(daily_returns)
-                    std_ret = sqrt(sum((r - avg_ret) ** 2 for r in daily_returns) / len(daily_returns)) if len(daily_returns) > 1 else 0
-                    metrics["sharpe_ratio"] = round((avg_ret / std_ret) * sqrt(252), 2) if std_ret > 0 else 0
-                    metrics["worst_day_pct"] = round(min(daily_returns) * 100, 2)
-                    metrics["best_day_pct"] = round(max(daily_returns) * 100, 2)
-                    if ADVANCED_METRICS_AVAILABLE:
-                        try:
-                            metrics["sortino_ratio"] = calculate_sortino_ratio(daily_returns)
-                            metrics["omega_ratio"] = calculate_omega_ratio(daily_returns)
-                        except Exception:
-                            pass
-                    if max_dd > 0 and metrics.get("total_return_pct", 0) != 0:
-                        annual_return = metrics["total_return_pct"] / max(len(daily_returns) / 252, 0.1)
-                        if ADVANCED_METRICS_AVAILABLE:
-                            try: metrics["calmar_ratio"] = calculate_calmar_ratio(annual_return, max_dd)
-                            except Exception: pass
-                metrics["equity_curve"] = [
-                    {"date": s["date"], "value": s.get("portfolio_value", 0), "spy_return": s.get("spy_return_pct", 0), "portfolio_return": s.get("portfolio_return_pct", 0)}
-                    for s in self.equity_snapshots if "portfolio_value" in s
-                ]
-        metrics["signals_found"] = len([s for s in self.signal_history if s.get("action_taken") in ["executed", "rejected"]])
-        metrics["signals_executed"] = len([s for s in self.signal_history if s.get("action_taken") == "executed"])
-        metrics["signals_rejected"] = len([s for s in self.signal_history if s.get("action_taken") == "rejected"])
-        if metrics["signals_found"] > 0:
-            metrics["rejection_rate"] = round(metrics["signals_rejected"] / metrics["signals_found"] * 100, 1)
-        metrics["withdrawal_pot"] = self.buckets["withdrawal"]["available"]
-        metrics["total_profits_extracted"] = self.buckets["withdrawal"]["profits_extracted"]
-        metrics["total_dividends_earned"] = self.buckets["dividend"].get("total_dividends_earned", 0)
-        self.performance_metrics = metrics
-        self._save_performance_metrics()
-        return metrics
-
-    # ==========================================
-    # CSV EXPORT
-    # ==========================================
-
-    def export_to_csv(self) -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        watermark = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
-        trades_file = self.exports_dir / f"trades_{timestamp}.csv"
-        if self.trade_log:
-            with open(trades_file, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["timestamp", "symbol", "side", "qty", "price", "filled_price", "filled_qty", "slippage_cost", "sec_fee", "order_id", "status", "reason", "confidence", "stop_loss", "take_profit", "estimated_cost", "sector", "bucket"])
-                writer.writeheader()
-                for t in self.trade_log:
-                    row = {k: t.get(k, "") for k in writer.fieldnames}
-                    if row.get("bucket") == "long_term": row["bucket"] = "dividend"
-                    writer.writerow(row)
-                f.write(watermark)
-        equity_file = self.exports_dir / f"equity_{timestamp}.csv"
-        if self.equity_snapshots:
-            with open(equity_file, "w", newline="") as f:
-                keys = set()
-                for s in self.equity_snapshots: keys.update(s.keys())
-                writer = csv.DictWriter(f, fieldnames=sorted(keys))
-                writer.writeheader()
-                for s in self.equity_snapshots: writer.writerow(s)
-                f.write(watermark)
-        signals_file = self.exports_dir / f"signals_{timestamp}.csv"
-        if self.signal_history:
-            with open(signals_file, "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["timestamp", "symbol", "signal_type", "confidence", "rsi", "rvol", "price", "reason", "action_taken", "rejection_reason", "tier", "sector", "bucket"])
-                writer.writeheader()
-                for s in self.signal_history:
-                    row = {k: s.get(k, "") for k in writer.fieldnames}
-                    if row.get("bucket") == "long_term": row["bucket"] = "dividend"
-                    writer.writerow(row)
-                f.write(watermark)
-        perf_file = self.exports_dir / f"performance_{timestamp}.csv"
-        perf = self.calculate_performance()
-        summary = {
-            "Total Trades": perf["total_trades"], "Win Rate (%)": perf["win_rate"],
-            "Avg Win (%)": perf["avg_win_pct"], "Avg Loss (%)": perf["avg_loss_pct"],
-            "Total Return (%)": perf["total_return_pct"], "SPY Return (%)": perf["spy_return_pct"],
-            "Outperformance (%)": perf["outperformance_pct"], "Max Drawdown (%)": perf["max_drawdown_pct"],
-            "Sharpe Ratio": perf["sharpe_ratio"], "Sortino Ratio": perf.get("sortino_ratio", 0),
-            "Calmar Ratio": perf.get("calmar_ratio", 0), "Omega Ratio": perf.get("omega_ratio", 0),
-            "Profit Factor": perf["profit_factor"],
-            "Withdrawal Pot ($)": perf["withdrawal_pot"], "Total Extracted ($)": perf["total_profits_extracted"],
-            "Total Dividends ($)": perf["total_dividends_earned"],
-        }
-        with open(perf_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["Metric", "Value"])
-            writer.writeheader()
-            for k, v in summary.items(): writer.writerow({"Metric": k, "Value": v})
-            f.write(watermark)
-        buckets_file = self.exports_dir / f"buckets_{timestamp}.csv"
-        ov = self.get_bucket_overview()
-        bucket_data = {
-            "Dividend Value": ov["dividend"]["value"], "Dividend Positions": ov["dividend"]["positions"],
-            "Growth Value": ov["growth"]["value"], "Growth Positions": ov["growth"]["positions"],
-            "Penny Value": ov["penny"]["value"], "Penny Positions": ov["penny"]["positions"],
-            "Withdrawal Available": ov["withdrawal"]["available"],
-            "Total Profit": ov["total_profit"], "Original Capital": ov["original_capital"],
-        }
-        with open(buckets_file, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["Metric", "Value"])
-            writer.writeheader()
-            for k, v in bucket_data.items(): writer.writerow({"Metric": k, "Value": v})
-            f.write(watermark)
-        return str(self.exports_dir)
-
-    # ==========================================
-    # ADVANCED SIGNALS INTEGRATION
-    # ==========================================
-
-    def scan_advanced(self, symbol: str, df=None) -> Dict:
-        if not ADVANCED_SIGNALS_AVAILABLE:
-            return {"signal": "HOLD", "confidence": 0, "reason": "Advanced signals not available", "details": []}
-        try:
-            if df is None:
-                df, source = self._fetch_stock_data(symbol)
-            if df is None or df.empty or len(df) < 50:
-                return {"signal": "HOLD", "confidence": 0, "reason": "Insufficient data", "details": []}
-            params = {
-                "rsi_oversold": self.settings.get("rsi_oversold", 35),
-                "rsi_overbought": self.settings.get("rsi_overbought", 65),
-                "min_rvol": self.settings.get("min_rvol", 1.0),
-                "signal_weights": self.settings.get("signal_weights", {}),
+            trade_dir = Path.home() / ".cascadetrade"
+            trade_dir.mkdir(parents=True, exist_ok=True)
+            trade_file = trade_dir / f"trades_{self.username or 'default'}.json"
+            data = {
+                "trade_log": self.trade_log,
+                "equity_snapshots": self.equity_snapshots,
+                "cycle_count": self.cycle_count,
+                "daily_pnl": self.daily_pnl,
+                "buckets": self.buckets,
+                "original_capital": self.buckets.get("original_capital", 0),
+                "last_updated": datetime.utcnow().isoformat(),
             }
-            signals = generate_all_signals(df, symbol, params)
-            if not signals:
-                return {"signal": "HOLD", "confidence": 0, "reason": "No signals generated", "details": []}
-            combined = calculate_combined_score(signals, params)
-            combined["symbol"] = symbol
-            combined["price"] = float(df['close'].iloc[-1])
-            combined["bucket"] = self.assign_bucket(symbol)
-            combined["signals"] = signals
-            return combined
+            with open(trade_file, "w") as f:
+                json.dump(data, f, indent=2, default=str)
         except Exception as e:
-            self._log_error(f"Advanced scan error for {symbol}: {str(e)[:60]}")
-            return {"signal": "HOLD", "confidence": 0, "reason": f"Error: {str(e)[:50]}", "details": []}
-
-    def check_vix(self) -> Dict:
-        if not ADVANCED_SIGNALS_AVAILABLE:
-            return {"safe_to_trade": True, "vix": 0, "level": "Unknown", "reason": "Advanced signals not available"}
-        threshold = self.settings.get("vix_max_threshold", 28.0)
-        result = vix_filter(threshold)
-        if AUDIT_AVAILABLE:
-            try: log_audit("system", "vix_check", "risk", details=result)
-            except Exception: pass
-        return result
+            print(f"Error saving trade log: {e}")
 
     # ==========================================
-    # BACKTESTING
-    # ==========================================
-
-    def run_backtest(self, symbols: List[str] = None, start_date: str = "2023-01-01",
-                     end_date: str = None, strategy: str = "combined") -> Dict:
-        if not BACKTEST_AVAILABLE:
-            return {"status": "error", "message": "Backtest module not available. Install core/backtest.py"}
-        if symbols is None:
-            symbols = self.settings.get("watchlist", US_QUICK_TURNOVER)[:20]
-        if end_date is None:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        engine = BacktestEngine(
-            initial_capital=self.settings.get("original_capital", 100000),
-            dividend_pct=self.settings.get("dividend_pct", 0.35),
-            growth_pct=self.settings.get("growth_pct", 0.35),
-            penny_pct=self.settings.get("penny_pct", 0.30),
-            min_dividend_yield=self.settings.get("min_dividend_yield", 0.03),
-            penny_price_threshold=self.settings.get("penny_price_threshold", 5.0),
-            stop_loss_pct=self.settings.get("stop_loss_pct", 0.05),
-            take_profit_pct=self.settings.get("take_profit_pct", 0.10),
-            max_positions=self.settings.get("max_positions", 10),
-            max_position_pct=self.settings.get("max_position_pct", 0.08),
-        )
-        result = engine.run_backtest(symbols=symbols, start_date=start_date, end_date=end_date, strategy=strategy)
-        if AUDIT_AVAILABLE:
-            try: log_audit("system", "backtest_run", "backtest", details={"symbols": len(symbols), "start": start_date, "end": end_date, "strategy": strategy, "result": result.get("status", "unknown")})
-            except Exception: pass
-        return result
-
-    # ==========================================
-    # DIVIDEND CALENDAR
-    # ==========================================
-
-    def get_upcoming_dividends(self, days_ahead: int = 30) -> List[Dict]:
-        if not DIVIDEND_CALENDAR_AVAILABLE:
-            return []
-        symbols = list(set(self.settings.get("watchlist", []) + DIVIDEND_STOCKS[:20]))
-        try:
-            upcoming = get_upcoming_ex_dividends(symbols, days_ahead)
-            if AUDIT_AVAILABLE:
-                try: log_audit("system", "dividend_calendar", "dividends", details={"symbols_checked": len(symbols), "found": len(upcoming)})
-                except Exception: pass
-            return upcoming
-        except Exception as e:
-            self._log_error(f"Dividend calendar error: {str(e)[:60]}")
-            return []
-
-    def get_dividend_stock_comparison(self) -> List[Dict]:
-        if not DIVIDEND_CALENDAR_AVAILABLE:
-            return []
-        symbols = list(set(self.settings.get("watchlist", [])[:30] + DIVIDEND_STOCKS[:30]))
-        try:
-            return get_dividend_comparison(symbols)
-        except Exception as e:
-            self._log_error(f"Dividend comparison error: {str(e)[:60]}")
-            return []
-
-    def calculate_drip_for_position(self, symbol: str, shares: int = None) -> Dict:
-        if not DIVIDEND_CALENDAR_AVAILABLE:
-            return {"error": "Dividend module not available"}
-        positions = self.get_positions()
-        current_price = 0; qty = shares
-        for p in positions:
-            if p["symbol"] == symbol:
-                current_price = float(p.get("current_price", 0))
-                if qty is None: qty = int(float(p.get("qty", 0)))
-                break
-        if current_price == 0:
-            if YF_AVAILABLE:
-                try:
-                    ticker = yf.Ticker(symbol)
-                    hist = ticker.history(period="1d")
-                    if not hist.empty: current_price = float(hist['Close'].iloc[-1])
-                except Exception: pass
-        if qty is None or qty <= 0: qty = 1
-        div_yield = get_div_yield_external(symbol)
-        if div_yield is None: div_yield = 0
-        return calculate_drip(symbol, qty, current_price, div_yield, years=10)
-
-    # ==========================================
-    # DIAMOND STANDARD REPORT
-    # ==========================================
-
-    def generate_diamond_report(self) -> Dict:
-        if ADVANCED_METRICS_AVAILABLE:
-            try:
-                return generate_full_report(self.trade_log, self.equity_snapshots)
-            except Exception as e:
-                self._log_error(f"Diamond report error: {str(e)[:60]}")
-        return self.calculate_performance()
-
-    # ==========================================
-    # TRADE JOURNAL
-    # ==========================================
-
-    def save_trade_note(self, username: str, trade_id: str = "", symbol: str = "",
-                        action: str = "", entry_reason: str = "",
-                        emotion: str = "", lesson_learned: str = "",
-                        tags: str = "") -> bool:
-        if not AUDIT_AVAILABLE: return False
-        try:
-            bucket = self.assign_bucket(symbol) if symbol else ""
-            entry = save_journal_entry(username=username, trade_id=trade_id, symbol=symbol, action=action,
-                                       entry_reason=entry_reason, emotion=emotion, lesson_learned=lesson_learned,
-                                       bucket=bucket, tags=tags)
-            return entry is not None
-        except Exception as e:
-            self._log_error(f"Journal save error: {str(e)[:60]}")
-            return False
-
-    def get_trade_notes(self, username: str, symbol: str = None) -> List[Dict]:
-        if not AUDIT_AVAILABLE: return []
-        try: return get_journal_entries(username, symbol)
-        except Exception as e:
-            self._log_error(f"Journal query error: {str(e)[:60]}")
-            return []
-
-    # ==========================================
-    # ENCRYPTED API KEY HANDLING
-    # ==========================================
-
-    def connect_encrypted(self, api_key_encrypted: str, secret_key_encrypted: str,
-                          base_url: str = 'https://paper-api.alpaca.markets') -> bool:
-        try:
-            if ENCRYPTION_AVAILABLE and is_encrypted(api_key_encrypted):
-                api_key = decrypt_value(api_key_encrypted)
-                secret_key = decrypt_value(secret_key_encrypted)
-            elif is_key_encrypted(api_key_encrypted):
-                api_key = decrypt_value(api_key_encrypted)
-                secret_key = decrypt_value(secret_key_encrypted)
-            else:
-                self._log_error("WARNING: API keys appear to be stored in plaintext!")
-                api_key = api_key_encrypted
-                secret_key = secret_key_encrypted
-            alpaca_api = tradeapi.REST(api_key, secret_key, base_url=base_url, api_version='v2')
-            return self.connect(alpaca_api)
-        except Exception as e:
-            self.connected = False
-            self._log_error(f"Encrypted connection error: {str(e)[:60]}")
-            return False
-
-    # ==========================================
-    # DIRECT API KEY CONNECTION (NEW)
-    # ==========================================
-
-    def connect_with_keys(self, api_key: str, secret_key: str,
-                          base_url: str = 'https://paper-api.alpaca.markets') -> dict:
-        """Connect to Alpaca using raw API keys. Returns dict with success status and full details."""
-        # Strip whitespace (common copy-paste issue)
-        api_key = api_key.strip()
-        secret_key = secret_key.strip()
-
-        if not api_key or not secret_key:
-            self.connected = False
-            self.api = None
-            self.status_message = "Connection failed: API key or secret key is empty"
-            return {"success": False, "message": self.status_message}
-
-        # Detect if user has live keys but paper URL
-        if api_key.startswith("AK") and "paper-api" in base_url:
-            self.status_message = "Connection failed: You entered LIVE trading keys but connected to the PAPER trading URL. Use paper keys (starting with PK)."
-            self._log_error(self.status_message)
-            self.connected = False
-            return {"success": False, "message": self.status_message}
-
-        try:
-            import alpaca_trade_api as tradeapi
-            alpaca_api = tradeapi.REST(api_key, secret_key, base_url=base_url, api_version='v2')
-
-            # Test connection immediately
-            account = alpaca_api.get_account()
-
-            # Success! Store the connection
-            self.api = alpaca_api
-            self._alpaca_api_ref = alpaca_api
-            self.connected = True
-
-            today = datetime.now().date()
-            if self.daily_reset_date != today:
-                self.daily_pnl = 0.0
-                self.daily_start_equity = float(account.equity)
-                self.daily_reset_date = today
-
-            self.consecutive_failures = 0
-            self.status_message = f"Connected to Alpaca Paper Trading. Balance: ${float(account.buying_power):,.2f}"
-
-            return {
-                "success": True,
-                "message": self.status_message,
-                "account": {
-                    "cash": float(account.cash),
-                    "buying_power": float(account.buying_power),
-                    "equity": float(account.equity),
-                    "portfolio_value": float(account.portfolio_value),
-                    "status": account.status,
-                }
-            }
-        except Exception as e:
-            self.connected = False
-            self.api = None
-            full_error = str(e)
-            self.status_message = f"Connection failed: {full_error}"
-            self._log_error(f"connect_with_keys failed: {full_error}")
-
-            # Provide helpful error messages for common issues
-            if "401" in full_error or "Unauthorized" in full_error:
-                hint = "Your API keys are incorrect, or you're using LIVE keys with the PAPER trading URL."
-            elif "403" in full_error or "Forbidden" in full_error:
-                hint = "Your Alpaca account may not be approved yet. Check your email for verification."
-            elif "404" in full_error:
-                hint = "API endpoint not found. Check your Alpaca account status."
-            elif "ConnectionError" in full_error or "Max retries" in full_error:
-                hint = "Network error. Check your internet connection or firewall settings."
-            else:
-                hint = f"Raw error: {full_error}"
-
-            return {
-                "success": False,
-                "message": hint,
-                "error": full_error
-            }
-
-    # ==========================================
-    # CONNECTION
-    # ==========================================
-
-    def connect(self, alpaca_api=None):
-        if alpaca_api:
-            self._alpaca_api_ref = alpaca_api
-            self.api = alpaca_api
-        else:
-            try:
-                from utils import alpaca_api
-                self._alpaca_api_ref = alpaca_api
-                self.api = alpaca_api
-            except Exception:
-                self.api = None
-                self._alpaca_api_ref = None
-        if self.api is None:
-            self.connected = False
-            self.status_message = "Alpaca API not available."
-            return False
-        return self._test_connection()
-
-    def _test_connection(self):
-        if self.api is None:
-            self.connected = False
-            self.status_message = "No API connection available."
-            return False
-        try:
-            account = self.api.get_account()
-            self.connected = True
-            today = datetime.now().date()
-            if self.daily_reset_date != today:
-                self.daily_pnl = 0.0
-                self.daily_start_equity = float(account.equity)
-                self.daily_reset_date = today
-            self.consecutive_failures = 0
-            self.status_message = f"Connected. Paper balance: ${float(account.buying_power):,.2f}"
-            return True
-        except Exception as e:
-            self.connected = False
-            full_error = str(e)
-            self.status_message = f"Connection failed: {full_error}"
-            self._log_error(f"Connection test failed: {full_error}")
-            return False
-
-    def _reconnect(self):
-        if self._alpaca_api_ref is None:
-            self._log_error("Cannot reconnect: no Alpaca API reference")
-            return False
-        self.reconnect_count += 1
-        self.last_reconnect_time = datetime.now().isoformat()
-        for attempt in range(1, self.MAX_RECONNECT_ATTEMPTS + 1):
-            delay = min(self.RECONNECT_BASE_DELAY * (2 ** (attempt - 1)), self.MAX_RECONNECT_DELAY)
-            self.status_message = f"Reconnecting... attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}"
-            self._log_error(f"Reconnect attempt {attempt}/{self.MAX_RECONNECT_ATTEMPTS}, waiting {delay}s")
-            if self._stop_event.wait(delay): return False
-            # Use stored API reference — do NOT import from utils (it's None)
-            self.api = self._alpaca_api_ref
-            if self._test_connection():
-                self.consecutive_failures = 0
-                return True
-        self.status_message = f"Failed to reconnect after {self.MAX_RECONNECT_ATTEMPTS} attempts."
-        return False
-
-    # ==========================================
-    # MARKET HOURS
+    # Market Status
     # ==========================================
 
     def is_market_open(self) -> Dict:
+        """Check if the US stock market is currently open."""
         try:
-            from zoneinfo import ZoneInfo
-            eastern = ZoneInfo("US/Eastern")
-            now_et = datetime.now(eastern)
-            market_open = dt_time(9, 30)
-            market_close = dt_time(16, 0)
-            is_weekday = now_et.weekday() < 5
-            is_trading_hours = market_open <= now_et.time() <= market_close
-            is_open = is_weekday and is_trading_hours
-            if is_weekday and now_et.time() < market_open:
-                next_open = datetime.combine(now_et.date(), market_open)
-            elif is_weekday and now_et.time() >= market_close:
-                next_date = now_et.date() + timedelta(days=1)
-                while next_date.weekday() >= 5: next_date += timedelta(days=1)
-                next_open = datetime.combine(next_date, market_open)
-            else:
-                next_date = now_et.date() + timedelta(days=1)
-                while next_date.weekday() >= 5: next_date += timedelta(days=1)
-                next_open = datetime.combine(next_date, market_open)
-            return {"is_open": is_open, "current_time_et": now_et.strftime("%I:%M %p"), "current_time_uk": now_et.strftime("%H:%M") + " UK",
-                    "market_open_time": "9:30 AM ET / 2:30 PM UK", "market_close_time": "4:00 PM ET / 9:00 PM UK",
-                    "is_weekday": is_weekday, "day_name": now_et.strftime("%A"), "next_open": next_open.strftime("%A %I:%M %p ET")}
+            if not self.connected or not self.api:
+                return {"is_open": False, "current_time_et": "N/A", "day_name": "N/A"}
+            clock = self.api.get_clock()
+            is_open = getattr(clock, 'is_open', False)
+            timestamp = getattr(clock, 'timestamp', datetime.utcnow())
+            next_open = getattr(clock, 'next_open', None)
+            next_close = getattr(clock, 'next_close', None)
+
+            if isinstance(timestamp, str):
+                try:
+                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except Exception:
+                    timestamp = datetime.utcnow()
+
+            current_time_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            day_name = timestamp.strftime("%A")
+
+            result = {
+                "is_open": is_open,
+                "current_time_et": current_time_str,
+                "day_name": day_name,
+            }
+            if next_open:
+                result["next_open"] = str(next_open) if next_open else None
+            if next_close:
+                result["next_close"] = str(next_close) if next_close else None
+            return result
         except Exception as e:
-            return {"is_open": True, "error": str(e), "current_time_et": "Unknown", "market_open_time": "9:30 AM ET / 2:30 PM UK", "market_close_time": "4:00 PM ET / 9:00 PM UK", "next_open": "Unknown"}
+            return {"is_open": False, "current_time_et": str(e), "day_name": "Unknown"}
+
+    def check_vix(self) -> Dict:
+        """Check VIX level and determine if it's safe to trade."""
+        try:
+            if not YF_AVAILABLE:
+                return {"safe_to_trade": True, "vix_value": 0, "reason": "yfinance not available"}
+            vix_data = yf.Ticker("^VIX").history(period="5d")
+            if vix_data.empty:
+                return {"safe_to_trade": True, "vix_value": 0, "reason": "VIX data unavailable"}
+            vix_value = float(vix_data['Close'].iloc[-1])
+            vix_threshold = 28.0
+            if self.settings.get("use_vix_filter", True) and vix_value > vix_threshold:
+                return {
+                    "safe_to_trade": False,
+                    "vix_value": vix_value,
+                    "reason": f"VIX is {vix_value:.1f} (above {vix_threshold:.0f} threshold). Market volatile — buying paused.",
+                }
+            return {"safe_to_trade": True, "vix_value": vix_value, "reason": f"VIX is {vix_value:.1f} — safe to trade."}
+        except Exception as e:
+            return {"safe_to_trade": True, "vix_value": 0, "reason": f"VIX check error: {e}"}
 
     # ==========================================
-    # ACCOUNT & POSITIONS
+    # Account & Position Info
     # ==========================================
 
     def get_account_info(self) -> Dict:
-        if not self.api or not self.connected:
-            return {"error": "Not connected"}
+        """Get current account information from Alpaca."""
         try:
+            if not self.connected or not self.api:
+                return {"error": "not_connected"}
             account = self.api.get_account()
-            return {"cash": float(account.cash), "buying_power": float(account.buying_power),
-                    "portfolio_value": float(account.portfolio_value), "equity": float(account.equity),
-                    "status": account.status, "pattern_day_trader": account.pattern_day_trader,
-                    "trade_count_today": int(account.daytrade_count)}
+            return {
+                "portfolio_value": float(getattr(account, 'portfolio_value', 0)),
+                "cash": float(getattr(account, 'cash', 0)),
+                "equity": float(getattr(account, 'equity', 0)),
+                "buying_power": float(getattr(account, 'buying_power', 0)),
+                "last_equity": float(getattr(account, 'last_equity', 0)),
+                "status": getattr(account, 'status', 'unknown'),
+                "pattern_day_trader": getattr(account, 'pattern_day_trader', False),
+                "trading_blocked": getattr(account, 'trading_blocked', False),
+                "transfers_blocked": getattr(account, 'transfers_blocked', False),
+                "account_blocked": getattr(account, 'account_blocked', False),
+                "shorting_enabled": getattr(account, 'shorting_enabled', False),
+                "initial_margin": float(getattr(account, 'initial_margin', 0)),
+                "maintenance_margin": float(getattr(account, 'maintenance_margin', 0)),
+                "long_market_value": float(getattr(account, 'long_market_value', 0)),
+                "short_market_value": float(getattr(account, 'short_market_value', 0)),
+            }
         except Exception as e:
-            self.connected = False
-            self._log_error(f"Account info error: {str(e)[:60]}")
             return {"error": str(e)}
 
     def get_positions(self) -> List[Dict]:
-        if not self.api or not self.connected: return []
+        """Get all current positions from Alpaca with caching."""
         try:
+            now = time.time()
+            if now - self._position_cache_time < 30 and self._position_cache:
+                return list(self._position_cache.values())
+
+            if not self.connected or not self.api:
+                return []
+
             positions = self.api.list_positions()
             result = []
-            for pos in positions:
-                result.append({
-                    "symbol": pos.symbol, "qty": float(pos.qty), "side": pos.side,
-                    "avg_entry_price": float(pos.avg_entry_price), "current_price": float(pos.current_price),
-                    "market_value": float(pos.market_value), "unrealized_pl": float(pos.unrealized_pl),
-                    "unrealized_plpc": float(pos.unrealized_plpc),
-                    "change_today": float(pos.change_today) if hasattr(pos, "change_today") else 0,
-                    "sector": SECTOR_MAP.get(pos.symbol, "Unknown"),
-                    "bucket": self.assign_bucket(pos.symbol),
-                })
+            for p in positions:
+                symbol = getattr(p, 'symbol', '')
+                bucket = self.assign_bucket(symbol)
+                pos_dict = {
+                    "symbol": symbol,
+                    "qty": float(getattr(p, 'qty', 0)),
+                    "avg_entry_price": float(getattr(p, 'avg_entry_price', 0)),
+                    "current_price": float(getattr(p, 'current_price', 0)),
+                    "market_value": float(getattr(p, 'market_value', 0)),
+                    "unrealized_pl": float(getattr(p, 'unrealized_pl', 0)),
+                    "unrealized_plpc": float(getattr(p, 'unrealized_plpc', 0)),
+                    "side": getattr(p, 'side', 'long'),
+                    "bucket": bucket,
+                    "asset_class": getattr(p, 'asset_class', 'us_equity'),
+                    "change_today": float(getattr(p, 'change_today', 0)),
+                    "cost_basis": float(getattr(p, 'cost_basis', 0)),
+                }
+                result.append(pos_dict)
+                self._position_cache[symbol] = pos_dict
+
+            self._position_cache_time = now
             return result
-        except Exception as e:
-            self.connected = False
-            self._log_error(f"Get positions error: {str(e)[:60]}")
+        except Exception:
             return []
 
-    def get_open_orders(self) -> List[Dict]:
-        if not self.api or not self.connected: return []
+    def _update_buckets(self):
+        """Update bucket values based on current positions."""
         try:
-            orders = self.api.list_orders(status="open")
-            return [{"id": str(o.id), "symbol": o.symbol, "qty": float(o.qty), "side": o.side, "type": o.type, "status": o.status} for o in orders]
-        except Exception: return []
+            positions = self.get_positions()
+            div_value = 0.0
+            gro_value = 0.0
+            pen_value = 0.0
+            div_count = 0
+            gro_count = 0
+            pen_count = 0
+
+            for p in positions:
+                bucket = p.get("bucket", "growth")
+                mv = p.get("market_value", 0)
+                if bucket in ("dividend", "long_term"):
+                    div_value += mv
+                    div_count += 1
+                elif bucket == "penny":
+                    pen_value += mv
+                    pen_count += 1
+                else:
+                    gro_value += mv
+                    gro_count += 1
+
+            account = self.get_account_info()
+            if "error" not in account:
+                total_equity = account.get("equity", 0)
+            else:
+                total_equity = 0
+
+            self.buckets["dividend"]["value"] = div_value
+            self.buckets["dividend"]["positions"] = div_count
+            self.buckets["dividend"]["cash_allocated"] = self.buckets["dividend"].get("cash_allocated", div_value)
+            self.buckets["growth"]["value"] = gro_value
+            self.buckets["growth"]["positions"] = gro_count
+            self.buckets["growth"]["cash_allocated"] = self.buckets["growth"].get("cash_allocated", gro_value)
+            self.buckets["penny"]["value"] = pen_value
+            self.buckets["penny"]["positions"] = pen_count
+            self.buckets["penny"]["cash_allocated"] = self.buckets["penny"].get("cash_allocated", pen_value)
+            self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0)
+            self.buckets["last_updated"] = datetime.utcnow().isoformat()
+
+            # Set original capital if not yet set
+            if self.buckets.get("original_capital", 0) == 0 and total_equity > 0:
+                self.buckets["original_capital"] = total_equity
+                self.buckets["dividend"]["total_deposited"] = total_equity * self.settings.get("dividend_pct", 0.35)
+                self.buckets["growth"]["total_deposited"] = total_equity * self.settings.get("growth_pct", 0.35)
+                self.buckets["penny"]["total_deposited"] = total_equity * self.settings.get("penny_pct", 0.30)
+                self._portfolio_start_value = total_equity
+
+            self._save_trade_log()
+        except Exception as e:
+            print(f"Error updating buckets: {e}")
+
+    def get_bucket_overview(self) -> Dict:
+        """Return a dict summarizing the state of each bucket."""
+        try:
+            self._update_buckets()
+        except Exception:
+            pass
+
+        div = self.buckets.get("dividend", {})
+        gro = self.buckets.get("growth", {})
+        pen = self.buckets.get("penny", {})
+        wit = self.buckets.get("withdrawal", {})
+
+        div_value = div.get("value", 0)
+        gro_value = gro.get("value", 0)
+        pen_value = pen.get("value", 0)
+        wit_value = wit.get("available", 0)
+
+        total_value = div_value + gro_value + pen_value + wit_value
+        original_capital = self.buckets.get("original_capital", total_value if total_value > 0 else 100000)
+        total_profit = total_value - original_capital
+        profit_pct = (total_profit / original_capital * 100) if original_capital > 0 else 0
+
+        return {
+            "dividend": {
+                "value": div_value,
+                "positions": div.get("positions", 0),
+                "total_deposited": div.get("total_deposited", 0),
+                "dividends_earned": div.get("dividends_earned", 0),
+                "profits_moved_in": div.get("profits_moved_in", 0),
+            },
+            "growth": {
+                "value": gro_value,
+                "positions": gro.get("positions", 0),
+                "total_deposited": gro.get("total_deposited", 0),
+                "profits_moved_in": gro.get("profits_moved_in", 0),
+            },
+            "penny": {
+                "value": pen_value,
+                "positions": pen.get("positions", 0),
+                "total_deposited": pen.get("total_deposited", 0),
+                "profits_to_growth": pen.get("profits_to_growth", 0),
+            },
+            "withdrawal": {
+                "available": wit_value,
+                "dividends_received": wit.get("dividends_received", 0),
+                "profits_extracted": wit.get("profits_extracted", 0),
+            },
+            "total_profit": total_profit,
+            "profit_pct": profit_pct,
+            "original_capital": original_capital,
+        }
 
     # ==========================================
-    # DATA FETCHING
+    # Stock Classification
     # ==========================================
 
-    def _fetch_stock_data(self, symbol: str, period: str = "3mo"):
-        df = None
-        if self.api and self.connected and ALPACA_AVAILABLE:
-            if '.L' not in symbol and '-' not in symbol:
-                try:
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=90)
-                    bars = self.api.get_bars(symbol, tradeapi.TimeFrame.Day, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'), feed='iex')
-                    df = bars.df
-                    if df is not None and not df.empty and len(df) >= 20:
-                        df.columns = [c.lower() for c in df.columns]
-                        return df, "alpaca_live"
-                except Exception as e:
-                    self._log_error(f"Alpaca data failed for {symbol}: {str(e)[:60]}")
-                    df = None
-        if YF_AVAILABLE:
-            try:
+    def classify_stock(self, symbol: str) -> str:
+        """Classify a stock into dividend, growth, or penny bucket."""
+        symbol = symbol.upper().strip()
+        if symbol in DIVIDEND_STOCKS:
+            return "dividend"
+        if symbol in GROWTH_STOCKS:
+            return "growth"
+        try:
+            if YF_AVAILABLE:
                 ticker = yf.Ticker(symbol)
-                df = ticker.history(period=period)
-                if df is not None and not df.empty and len(df) >= 20:
-                    df.columns = [c.lower() for c in df.columns]
-                    return df, "yahoo_delay"
-            except Exception as e:
-                self._log_error(f"Yahoo data failed for {symbol}: {str(e)[:60]}")
-                df = None
-        return None, "none"
+                info = ticker.info or {}
+                price = info.get("currentPrice", info.get("regularMarketPrice", info.get("previousClose", 0)))
+                if not price or price == 0:
+                    hist = ticker.history(period="5d")
+                    if not hist.empty:
+                        price = float(hist['Close'].iloc[-1])
+                    else:
+                        price = 0
+                div_yield = info.get("dividendYield", 0) or 0
+                penny_threshold = self.settings.get("penny_settings", {}).get(
+                    "penny_price_threshold", self.settings.get("penny_price_threshold", 5.0))
+                min_div_yield = self.settings.get("dividend_settings", {}).get(
+                    "min_dividend_yield", self.settings.get("min_dividend_yield", 0.03))
+                if price > 0 and price < penny_threshold:
+                    return "penny"
+                if div_yield and div_yield >= min_div_yield:
+                    return "dividend"
+                if price > 0:
+                    return "growth"
+        except Exception:
+            pass
+        return "growth"
 
+    def assign_bucket(self, symbol: str) -> str:
+        """Assign a bucket to a stock (normalizes long_term to dividend)."""
+        result = self.classify_stock(symbol)
+        if result == "long_term":
+            result = "dividend"
+        return result
+
+    def debug_bucket(self, symbol: str) -> Dict:
+        """Debug bucket classification for a symbol."""
+        symbol = symbol.upper().strip()
+        result = {
+            "symbol": symbol,
+            "in_dividend_list": symbol in DIVIDEND_STOCKS,
+            "in_growth_list": symbol in GROWTH_STOCKS,
+            "final_bucket": self.classify_stock(symbol),
+            "penny_threshold": self.settings.get("penny_settings", {}).get(
+                "penny_price_threshold", self.settings.get("penny_price_threshold", 5.0)),
+            "min_dividend_yield": self.settings.get("dividend_settings", {}).get(
+                "min_dividend_yield", self.settings.get("min_dividend_yield", 0.03)),
+        }
+        try:
+            if YF_AVAILABLE:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info or {}
+                price = info.get("currentPrice", info.get("regularMarketPrice", 0))
+                div_yield = info.get("dividendYield", 0) or 0
+                market_cap = info.get("marketCap", 0) or 0
+                sector = info.get("sector", "Unknown")
+                result["price"] = price
+                result["dividend_yield"] = div_yield
+                result["market_cap"] = market_cap
+                result["sector"] = sector
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    def _get_sector(self, symbol: str) -> str:
+        """Get the sector for a symbol, with caching. Uses symbol→sector SECTOR_MAP."""
+        symbol = symbol.upper().strip()
+        if symbol in self._sector_cache:
+            return self._sector_cache[symbol]
+        # Direct lookup in symbol→sector map
+        sector = SECTOR_MAP.get(symbol, None)
+        if sector:
+            self._sector_cache[symbol] = sector
+            return sector
+        # Fallback to yfinance
+        try:
+            if YF_AVAILABLE:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info or {}
+                sector = info.get("sector", "Unknown")
+                self._sector_cache[symbol] = sector
+                return sector
+        except Exception:
+            pass
+        self._sector_cache[symbol] = "Unknown"
+        return "Unknown"
+
+    def _get_bucket_settings(self, bucket: str) -> Dict:
+        """Get the settings dict for a specific bucket."""
+        if bucket == "penny":
+            return self.settings.get("penny_settings", DEFAULT_SETTINGS["penny_settings"])
+        elif bucket in ("dividend", "long_term"):
+            return self.settings.get("dividend_settings", DEFAULT_SETTINGS["dividend_settings"])
+        else:
+            return self.settings.get("growth_settings", DEFAULT_SETTINGS["growth_settings"])
+
+    def _get_current_price(self, symbol: str) -> float:
+        """Get the current price for a symbol, with caching."""
+        symbol = symbol.upper().strip()
+        now = time.time()
+        if symbol in self._price_cache and (now - self._price_cache_time) < 120:
+            return self._price_cache.get(symbol, 0)
+
+        try:
+            if YF_AVAILABLE:
+                ticker = yf.Ticker(symbol)
+                info = ticker.info or {}
+                price = info.get("currentPrice", info.get("regularMarketPrice", info.get("previousClose", 0)))
+                if not price or price == 0:
+                    hist = ticker.history(period="5d")
+                    if not hist.empty:
+                        price = float(hist['Close'].iloc[-1])
+                if price and price > 0:
+                    self._price_cache[symbol] = float(price)
+                    self._price_cache_time = now
+                    return float(price)
+        except Exception:
+            pass
+        return 0
     # ==========================================
-    # BATCH DATA FETCHING (NEW - Change 1)
+    # Scanning & Signals (scan_signals and evaluate_risk are SEPARATE methods)
     # ==========================================
 
-    def _batch_fetch_data(self, symbols: List[str]) -> Dict[str, 'pd.DataFrame']:
-        """Batch fetch stock data using Alpaca or yf.download for speed."""
-        results = {}
-        failed_symbols = []
+    def scan_signals(self) -> List[Dict]:
+        """Scan for signals and return them. Calls scan_all() internally."""
+        self.scan_all()
+        # Also record signals in history
+        for sig in self.signals_found:
+            self.record_signal(sig)
+        return self.signals_found
 
-        # Strategy 1: Try Alpaca batch bars first (if connected)
-        if self.api and self.connected and ALPACA_AVAILABLE:
+    def scan_all(self):
+        """Scan the watchlist for buy/sell signals."""
+        self.signals_found = []
+
+        if not self.connected or not self.api:
+            self.status_message = "Not connected — cannot scan"
+            return
+
+        if self.settings.get("use_vix_filter", True):
+            vix_result = self.check_vix()
+            if not vix_result.get("safe_to_trade", True):
+                self.status_message = vix_result.get("reason", "VIX filter active")
+                return
+
+        watchlist = self.settings.get("watchlist", [])
+        if not watchlist:
+            self.status_message = "No watchlist configured"
+            return
+
+        batch_data = self._batch_fetch_data(watchlist)
+
+        for symbol in watchlist:
             try:
-                chunk_size = 200
-                for c in range(0, len(symbols), chunk_size):
-                    chunk = symbols[c:c + chunk_size]
+                df = batch_data.get(symbol)
+                if df is None or df.empty or len(df) < 20:
+                    continue
+
+                close = float(df['close'].iloc[-1])
+                volume = float(df['volume'].iloc[-1])
+                avg_vol = float(df['volume'].rolling(20).mean().iloc[-1])
+                rvol = volume / avg_vol if avg_vol > 0 else 0
+
+                if close <= 0 or np.isnan(close):
+                    continue
+
+                # Calculate RSI
+                rsi_val = 50.0
+                if TA_AVAILABLE:
                     try:
-                        end_date = datetime.now()
-                        start_date = end_date - timedelta(days=90)
-                        bars = self.api.get_bars(
-                            chunk,
-                            tradeapi.TimeFrame.Day,
-                            start=start_date.strftime('%Y-%m-%d'),
-                            end=end_date.strftime('%Y-%m-%d'),
-                            feed='iex'
-                        )
-                        symbol_bars = {}
-                        for bar in bars:
-                            sym = bar.S
-                            if sym not in symbol_bars:
-                                symbol_bars[sym] = []
-                            symbol_bars[sym].append({
-                                'open': bar.o, 'high': bar.h, 'low': bar.l,
-                                'close': bar.c, 'volume': bar.v,
-                                'timestamp': bar.t
-                            })
-                        for sym, bar_list in symbol_bars.items():
-                            try:
-                                sym_df = pd.DataFrame(bar_list)
-                                sym_df['timestamp'] = pd.to_datetime(sym_df['timestamp'])
-                                sym_df = sym_df.set_index('timestamp')
-                                sym_df = sym_df.sort_index()
-                                if len(sym_df) >= 20:
-                                    results[sym] = sym_df
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        self._log_error(f"Alpaca batch fetch error: {str(e)[:80]}")
-                        # Don't add to failed_symbols yet, yf.download will handle them
-            except Exception as e:
-                self._log_error(f"Alpaca batch error: {str(e)[:80]}")
+                        rsi_series = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+                        rsi_val = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+                    except Exception:
+                        rsi_val = 50.0
 
-        # Strategy 2: Use yf.download for remaining symbols (in chunks of 50)
-        remaining = [s for s in symbols if s not in results]
-        if remaining and YF_AVAILABLE:
-            chunk_size = 50
-            for c in range(0, len(remaining), chunk_size):
-                chunk = remaining[c:c + chunk_size]
-                ticker_string = " ".join(chunk)
-                try:
-                    batch_df = yf.download(
-                        ticker_string,
-                        period="3mo",
-                        group_by="ticker",
-                        threads=True,
-                        progress=False
-                    )
+                # Calculate ATR
+                atr_val = 0.0
+                if TA_AVAILABLE and self.settings.get("use_atr_position_sizing", True):
+                    try:
+                        atr_series = ta.volatility.AverageTrueRange(
+                            df['high'], df['low'], df['close'], window=14
+                        ).average_true_range()
+                        atr_val = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+                    except Exception:
+                        atr_val = 0.0
 
+                # Get bucket and settings
+                bucket = self.classify_stock(symbol)
+                bucket_settings = self._get_bucket_settings(bucket)
+                rsi_oversold = bucket_settings.get("rsi_oversold", 30)
+                rsi_overbought = bucket_settings.get("rsi_overbought", 70)
+                min_confidence = bucket_settings.get("min_confidence", 0.25)
+                min_rvol = self.settings.get("min_rvol", 1.5)
+
+                # Build confidence and signal
+                confidence = 0.0
+                reason_parts = []
+                signal = "HOLD"
+
+                # RSI signal
+                if rsi_val < rsi_oversold:
+                    confidence += 0.35
+                    reason_parts.append(f"RSI {rsi_val:.0f} < {rsi_oversold} (oversold)")
+                elif rsi_val > rsi_overbought:
+                    confidence += 0.30
+                    reason_parts.append(f"RSI {rsi_val:.0f} > {rsi_overbought} (overbought)")
+
+                # Volume signal
+                if rvol >= min_rvol:
+                    confidence += 0.20
+                    reason_parts.append(f"RVOL {rvol:.1f}")
+
+                # Advanced signals
+                if self.settings.get("use_advanced_signals", True) and TA_AVAILABLE:
+                    # MACD
+                    try:
+                        macd_indicator = ta.trend.MACD(df['close'])
+                        macd_line = macd_indicator.macd()
+                        macd_signal_line = macd_indicator.macd_signal()
+                        macd_hist = macd_indicator.macd_diff()
+                        if not pd.isna(macd_line.iloc[-1]) and not pd.isna(macd_signal_line.iloc[-1]):
+                            if macd_line.iloc[-1] > macd_signal_line.iloc[-1]:
+                                confidence += 0.15
+                                reason_parts.append("MACD bullish crossover")
+                            elif macd_line.iloc[-1] < macd_signal_line.iloc[-1]:
+                                confidence += 0.10
+                                reason_parts.append("MACD bearish crossover")
+                            # MACD histogram momentum
+                            if len(macd_hist) >= 2 and not pd.isna(macd_hist.iloc[-1]) and not pd.isna(macd_hist.iloc[-2]):
+                                if macd_hist.iloc[-1] > macd_hist.iloc[-2] and macd_hist.iloc[-1] > 0:
+                                    confidence += 0.05
+                                    reason_parts.append("MACD histogram expanding")
+                    except Exception:
+                        pass
+
+                    # Bollinger Bands
+                    try:
+                        bb_indicator = ta.volatility.BollingerBands(df['close'])
+                        bb_high = bb_indicator.bollinger_hband()
+                        bb_low = bb_indicator.bollinger_lband()
+                        bb_mid = bb_indicator.bollinger_mavg()
+                        if not pd.isna(bb_high.iloc[-1]) and not pd.isna(bb_low.iloc[-1]):
+                            if close < bb_low.iloc[-1]:
+                                confidence += 0.10
+                                reason_parts.append("Below lower Bollinger Band")
+                            elif close > bb_high.iloc[-1]:
+                                confidence += 0.10
+                                reason_parts.append("Above upper Bollinger Band")
+                    except Exception:
+                        pass
+
+                    # SMA crossovers
+                    try:
+                        sma_50 = df['close'].rolling(50).mean()
+                        sma_200 = df['close'].rolling(200).mean()
+                        if len(sma_50) >= 2 and len(sma_200) >= 2:
+                            if not pd.isna(sma_50.iloc[-1]) and not pd.isna(sma_200.iloc[-1]):
+                                if sma_50.iloc[-1] > sma_200.iloc[-1]:
+                                    confidence += 0.10
+                                    reason_parts.append("Golden Cross (SMA50 > SMA200)")
+                                elif sma_50.iloc[-1] < sma_200.iloc[-1]:
+                                    confidence += 0.05
+                                    reason_parts.append("Death Cross (SMA50 < SMA200)")
+                    except Exception:
+                        pass
+
+                # Determine signal direction
+                if rsi_val < rsi_oversold and confidence >= min_confidence:
+                    signal = "BUY"
+                elif rsi_val > rsi_overbought and confidence >= min_confidence:
+                    signal = "SELL"
+                elif confidence >= 0.15:
+                    signal = "HOLD"
+
+                self.signals_found.append({
+                    "symbol": symbol,
+                    "signal": signal,
+                    "price": close,
+                    "rsi": round(rsi_val, 1),
+                    "rvol": round(rvol, 2),
+                    "atr": round(atr_val, 2),
+                    "confidence": round(min(confidence, 1.0), 2),
+                    "bucket": bucket,
+                    "reason": " | ".join(reason_parts) if reason_parts else "No strong signal",
+                })
+
+            except Exception:
+                continue
+
+        self.status_message = f"Scan complete: {len(self.signals_found)} signals found"
+
+    def evaluate_risk(self, symbol: str, signal_data: Dict) -> Dict:
+        """Evaluate if a trade meets risk criteria. Separate method, NOT nested in scan_all."""
+        result = {
+            "approved": False,
+            "symbol": symbol,
+            "reasons": [],
+            "bucket": signal_data.get("bucket", "growth"),
+            "confidence": signal_data.get("confidence", 0),
+        }
+
+        try:
+            positions = self.get_positions()
+
+            # Check max positions
+            max_positions = self.settings.get("max_positions", 10)
+            if len(positions) >= max_positions:
+                result["reasons"].append(f"Max positions reached ({len(positions)}/{max_positions})")
+                return result
+
+            # Check if already in position
+            existing_symbols = [p["symbol"] for p in positions]
+            if symbol in existing_symbols and signal_data.get("signal") == "BUY":
+                result["reasons"].append(f"Already holding {symbol}")
+                return result
+
+            # Check confidence
+            confidence = signal_data.get("confidence", 0)
+            bucket = signal_data.get("bucket", "growth")
+            bucket_settings = self._get_bucket_settings(bucket)
+            min_confidence = bucket_settings.get("min_confidence",
+                            self.settings.get("min_confidence", 0.25))
+            if confidence < min_confidence:
+                result["reasons"].append(f"Confidence {confidence:.0%} below {min_confidence:.0%} minimum")
+                return result
+
+            # Check max position %
+            account = self.get_account_info()
+            if "error" not in account:
+                equity = account.get("equity", 0)
+                buying_power = account.get("buying_power", 0)
+                max_pos_pct = bucket_settings.get("max_position_pct",
+                                self.settings.get("max_position_pct", 0.08))
+                price = signal_data.get("price", 0)
+
+                if price > 0 and equity > 0:
+                    # ATR position sizing
+                    if self.settings.get("use_atr_position_sizing", True) and signal_data.get("atr", 0) > 0:
+                        atr = signal_data.get("atr", 0)
+                        risk_per_share = atr * 2  # Use 2x ATR as risk distance
+                        stop_loss_pct = bucket_settings.get("stop_loss_pct",
+                                      self.settings.get("stop_loss_pct", 0.05))
+                        if risk_per_share > 0 and stop_loss_pct > 0:
+                            risk_amount = equity * stop_loss_pct
+                            qty_atr = max(1, int(risk_amount / risk_per_share))
+                            max_value_atr = qty_atr * price
+                            if max_value_atr / equity > max_pos_pct:
+                                qty_atr = int(equity * max_pos_pct / price)
+                        else:
+                            qty_atr = 1
+                    else:
+                        qty_atr = 1
+
+                    position_value = qty_atr * price
+                    if position_value / equity > max_pos_pct:
+                        result["reasons"].append(f"Position exceeds {max_pos_pct:.0%} max allocation")
+                        return result
+
+                    # Check buying power
+                    if signal_data.get("signal") == "BUY" and position_value > buying_power:
+                        result["reasons"].append(f"Insufficient buying power (${buying_power:,.0f})")
+                        return result
+
+            # Check daily loss limit
+            daily_loss_limit = self.settings.get("daily_loss_limit_pct", 0.03)
+            if self.daily_pnl < 0 and "error" not in account and account.get("equity", 0) > 0:
+                daily_loss_pct = abs(self.daily_pnl) / account["equity"]
+                if daily_loss_pct > daily_loss_limit:
+                    result["reasons"].append(f"Daily loss limit reached ({daily_loss_pct:.1%} > {daily_loss_limit:.0%})")
+                    return result
+
+            # Check sector limit
+            max_same_sector = self.settings.get("max_same_sector", 3)
+            target_sector = self._get_sector(symbol)
+            sector_count = sum(1 for p in positions if self._get_sector(p["symbol"]) == target_sector)
+            if sector_count >= max_same_sector:
+                result["reasons"].append(f"Max same sector ({sector_count}/{max_same_sector} in {target_sector})")
+                return result
+
+            # VIX filter check
+            if self.settings.get("use_vix_filter", True):
+                vix_result = self.check_vix()
+                if not vix_result.get("safe_to_trade", True):
+                    result["reasons"].append(vix_result.get("reason", "VIX filter active"))
+                    return result
+
+            # All checks passed
+            result["approved"] = True
+            return result
+
+        except Exception as e:
+            result["reasons"].append(f"Risk evaluation error: {e}")
+            return result
+
+    # ==========================================
+    # Batch Data Fetching
+    # ==========================================
+
+    def _batch_fetch_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+        """Batch fetch historical data for multiple symbols with retry logic."""
+        result = {}
+        failed_symbols = []
+        chunk_size = 50
+
+        for i in range(0, len(symbols), chunk_size):
+            chunk = symbols[i:i + chunk_size]
+            try:
+                if len(chunk) > 1:
+                    ticker_str = " ".join(chunk)
+                    batch_df = yf.download(ticker_str, period="3mo", group_by="ticker",
+                                           threads=True, progress=False)
                     for symbol in chunk:
                         try:
-                            if len(chunk) == 1:
-                                sym_df = batch_df.copy()
+                            if isinstance(batch_df.columns, pd.MultiIndex):
+                                sym_df = batch_df[symbol].copy()
                             else:
-                                try:
-                                    sym_df = batch_df[symbol].copy()
-                                except (KeyError, TypeError):
-                                    # Try alternative access for different yfinance versions
-                                    try:
-                                        sym_df = batch_df.xs(symbol, axis=1, level=0).copy()
-                                    except Exception:
-                                        failed_symbols.append(symbol)
-                                        continue
-
-                            # Handle MultiIndex columns
-                            if isinstance(sym_df.columns, pd.MultiIndex):
-                                sym_df.columns = [str(col[1]) if col[1] else str(col[0]) for col in sym_df.columns]
-
-                            # Normalize columns
-                            sym_df.columns = [str(col).lower().replace(' ', '_') for col in sym_df.columns]
-
-                            # Drop adj_close if present
+                                sym_df = batch_df.copy()
+                            sym_df.columns = [str(c).lower().replace(' ', '_') for c in sym_df.columns]
                             if 'adj_close' in sym_df.columns:
                                 sym_df = sym_df.drop(columns=['adj_close'])
-
-                            # Drop rows with NaN close
-                            if 'close' in sym_df.columns:
-                                sym_df = sym_df.dropna(subset=['close'])
-
+                            sym_df.dropna(subset=['close'], inplace=True)
                             if not sym_df.empty and len(sym_df) >= 20:
-                                results[symbol] = sym_df
+                                result[symbol] = sym_df
                             else:
                                 failed_symbols.append(symbol)
                         except Exception:
                             failed_symbols.append(symbol)
-                except Exception as e:
-                    self._log_error(f"Batch download error for chunk: {str(e)[:80]}")
-                    failed_symbols.extend(chunk)
-
-        # Strategy 3: Fallback to one-by-one for failed symbols
-        if failed_symbols and YF_AVAILABLE:
-            self._log_error(f"Fallback: Fetching {len(failed_symbols)} symbols individually")
-            for symbol in failed_symbols:
-                if symbol not in results:
+                else:
+                    symbol = chunk[0]
                     try:
-                        df, source = self._fetch_stock_data(symbol)
+                        df = yf.Ticker(symbol).history(period="3mo")
                         if df is not None and not df.empty and len(df) >= 20:
-                            results[symbol] = df
+                            df.columns = [c.lower() for c in df.columns]
+                            if 'adj_close' in df.columns:
+                                df = df.drop(columns=['adj_close'])
+                            result[symbol] = df
+                        else:
+                            failed_symbols.append(symbol)
+                    except Exception:
+                        failed_symbols.append(symbol)
+            except Exception:
+                failed_symbols.extend(chunk)
+
+        # Retry failed symbols individually
+        if failed_symbols:
+            for symbol in failed_symbols:
+                if symbol not in result:
+                    try:
+                        df = yf.Ticker(symbol).history(period="3mo")
+                        if df is not None and not df.empty and len(df) >= 20:
+                            df.columns = [c.lower() for c in df.columns]
+                            if 'adj_close' in df.columns:
+                                df = df.drop(columns=['adj_close'])
+                            result[symbol] = df
                     except Exception:
                         pass
 
+        return result
+
+    # ==========================================
+    # Order Placement & Position Management
+    # ==========================================
+
+    def place_order(self, symbol: str, side: str, qty: float = None,
+                    order_type: str = "market", limit_price: float = None,
+                    bucket: str = None, confidence: float = 0.0,
+                    reason: str = "") -> Dict:
+        """Place an order on Alpaca with position sizing."""
+        try:
+            if not self.connected or not self.api:
+                return {"status": "error", "message": "Not connected to Alpaca"}
+
+            if not bucket:
+                bucket = self.classify_stock(symbol)
+
+            bucket_settings = self._get_bucket_settings(bucket)
+            account = self.get_account_info()
+            if "error" in account:
+                return {"status": "error", "message": f"Cannot get account info: {account['error']}"}
+
+            equity = account.get("equity", 0)
+            buying_power = account.get("buying_power", 0)
+            price = signal_data_price = 0
+
+            # Get price
+            if side == "buy":
+                price = self._get_current_price(symbol)
+                if price <= 0:
+                    try:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+                        price = info.get("currentPrice", info.get("regularMarketPrice", 0))
+                        if not price:
+                            hist = ticker.history(period="5d")
+                            if not hist.empty:
+                                price = float(hist['Close'].iloc[-1])
+                    except Exception:
+                        pass
+                if price <= 0:
+                    return {"status": "error", "message": f"Cannot get price for {symbol}"}
+
+            # Calculate quantity
+            if qty is None or qty <= 0:
+                max_pos_pct = bucket_settings.get("max_position_pct",
+                                self.settings.get("max_position_pct", 0.08))
+                max_position_value = equity * max_pos_pct
+
+                # ATR position sizing
+                if self.settings.get("use_atr_position_sizing", True):
+                    try:
+                        ticker_data = yf.Ticker(symbol).history(period="3mo")
+                        if not ticker_data.empty and TA_AVAILABLE and len(ticker_data) >= 14:
+                            atr_series = ta.volatility.AverageTrueRange(
+                                ticker_data['High'], ticker_data['Low'], ticker_data['Close'],
+                                window=14
+                            ).average_true_range()
+                            atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0
+                            stop_loss_pct = bucket_settings.get("stop_loss_pct",
+                                          self.settings.get("stop_loss_pct", 0.05))
+                            if atr > 0 and stop_loss_pct > 0:
+                                risk_per_share = atr * 2
+                                risk_amount = equity * stop_loss_pct
+                                qty_atr = max(1, int(risk_amount / risk_per_share))
+                                position_value_atr = qty_atr * price
+                                if position_value_atr <= max_position_value and qty_atr * price <= buying_power:
+                                    qty = qty_atr
+                    except Exception:
+                        pass
+
+                if qty is None or qty <= 0:
+                    qty = max(1, int(max_position_value / price))
+
+                # Ensure we don't exceed buying power
+                if side == "buy" and qty * price > buying_power:
+                    qty = max(1, int(buying_power / price))
+                    if qty * price > buying_power:
+                        return {"status": "error", "message": f"Insufficient buying power for {symbol}"}
+
+            # Submit order
+            if order_type == "limit" and limit_price:
+                order = self.api.submit_order(
+                    symbol=symbol, qty=qty, side=side, type="limit",
+                    time_in_force="day", limit_price=limit_price,
+                )
+            else:
+                order = self.api.submit_order(
+                    symbol=symbol, qty=qty, side=side, type="market",
+                    time_in_force="day",
+                )
+
+            # Get filled price (may be 0 for market orders initially)
+            filled_price = float(getattr(order, 'filled_avg_price', 0) or 0)
+            if filled_price <= 0:
+                filled_price = price
+
+            # Log the trade
+            trade_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "symbol": symbol,
+                "side": side,
+                "qty": qty,
+                "price": filled_price,
+                "bucket": bucket,
+                "confidence": confidence,
+                "reason": reason,
+                "order_id": getattr(order, 'id', ''),
+                "order_status": getattr(order, 'status', 'unknown'),
+            }
+            self.trade_log.append(trade_entry)
+            self._save_trade_log()
+
+            if AUDIT_AVAILABLE and self.username:
+                try:
+                    log_trade_audit(self.username, symbol, side, qty, filled_price, bucket, confidence, reason)
+                except Exception:
+                    pass
+
+            bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+            self.send_alert(
+                f"{'🟢' if side == 'buy' else '🔴'} **{side.upper()}** {qty} shares of **{symbol}** "
+                f"at ${filled_price:.2f} ({bucket_icon} {bucket.title()}) | Confidence: {confidence:.0%}"
+            )
+
+            return {"status": "success", "order_id": getattr(order, 'id', ''), "qty": qty, "price": filled_price}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def close_position(self, symbol: str, reason: str = "") -> Dict:
+        """Close a position by selling all shares of a symbol."""
+        try:
+            if not self.connected or not self.api:
+                return {"status": "error", "message": "Not connected to Alpaca"}
+
+            positions = self.get_positions()
+            position = None
+            for p in positions:
+                if p["symbol"] == symbol:
+                    position = p
+                    break
+
+            if not position:
+                return {"status": "error", "message": f"No position found for {symbol}"}
+
+            qty = position["qty"]
+            bucket = position.get("bucket", self.classify_stock(symbol))
+            entry_price = position.get("avg_entry_price", 0)
+            current_price = position.get("current_price", 0)
+            pl = position.get("unrealized_pl", 0)
+            pl_pct = position.get("unrealized_plpc", 0)
+            market_value = position.get("market_value", 0)
+
+            # Submit sell order
+            order = self.api.submit_order(
+                symbol=symbol, qty=qty, side="sell",
+                type="market", time_in_force="day",
+            )
+
+            # Handle profit skimming
+            skim_pct = self.settings.get("profit_skim_pct", 1.0)
+            if pl > 0 and skim_pct > 0:
+                profit_to_withdraw = pl * skim_pct
+                self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + profit_to_withdraw
+                self.buckets["withdrawal"]["profits_extracted"] = self.buckets["withdrawal"].get("profits_extracted", 0) + profit_to_withdraw
+
+                # Remaining profit goes back to bucket
+                remaining_profit = pl * (1 - skim_pct)
+                if bucket in self.buckets:
+                    self.buckets[bucket]["profits_moved_in"] = self.buckets[bucket].get("profits_moved_in", 0) + remaining_profit
+
+            # Check and remove trailing stop
+            if symbol in self._trailing_stops:
+                del self._trailing_stops[symbol]
+
+            # Log the trade
+            trade_entry = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "symbol": symbol,
+                "side": "sell",
+                "qty": qty,
+                "price": current_price if current_price > 0 else entry_price,
+                "bucket": bucket,
+                "confidence": 0,
+                "reason": reason or f"Close position (P&L: {pl_pct:+.2%})",
+                "order_id": getattr(order, 'id', ''),
+                "order_status": getattr(order, 'status', 'unknown'),
+                "pl": pl,
+                "pl_pct": pl_pct,
+                "market_value": market_value,
+                "entry_price": entry_price,
+            }
+            self.trade_log.append(trade_entry)
+            self._save_trade_log()
+
+            bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+            self.send_alert(
+                f"🔴 **SELL** {qty} shares of **{symbol}** ({bucket_icon} {bucket.title()}) | "
+                f"P&L: ${pl:+,.2f} ({pl_pct:+.2%}) | Reason: {reason or 'Stop/Target hit'}"
+            )
+
+            return {
+                "status": "success",
+                "symbol": symbol,
+                "qty": qty,
+                "pl": pl,
+                "pl_pct": pl_pct,
+                "market_value": market_value,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def check_stops(self) -> List[Dict]:
+        """Check stop losses, take profits, and trailing stops on all positions."""
+        results = []
+
+        try:
+            if not self.connected or not self.api:
+                return results
+
+            positions = self.get_positions()
+            for p in positions:
+                symbol = p["symbol"]
+                bucket = p.get("bucket", self.classify_stock(symbol))
+                bucket_settings = self._get_bucket_settings(bucket)
+
+                entry_price = p.get("avg_entry_price", 0)
+                current_price = p.get("current_price", 0)
+                pl_pct = p.get("unrealized_plpc", 0)
+                pl_dollar = p.get("unrealized_pl", 0)
+                market_value = p.get("market_value", 0)
+
+                if entry_price <= 0 or current_price <= 0:
+                    continue
+
+                # Get thresholds
+                stop_loss_pct = bucket_settings.get("stop_loss_pct",
+                                self.settings.get("stop_loss_pct", 0.05))
+                take_profit_pct = bucket_settings.get("take_profit_pct",
+                                 self.settings.get("take_profit_pct", 0.10))
+                trailing_stop_pct = bucket_settings.get("trailing_stop_pct",
+                                  self.settings.get("trailing_stop_pct", 0.04))
+
+                # Check stop loss
+                if pl_pct <= -stop_loss_pct:
+                    close_result = self.close_position(symbol,
+                        reason=f"Stop loss hit: {pl_pct:+.2%} (threshold: -{stop_loss_pct:.0%})")
+                    results.append({
+                        "symbol": symbol,
+                        "action": "stop_loss",
+                        "pl_pct": pl_pct,
+                        "pl_dollar": pl_dollar,
+                        "threshold": -stop_loss_pct,
+                        "bucket": bucket,
+                        "result": close_result,
+                    })
+                    continue
+
+                # Check take profit
+                if pl_pct >= take_profit_pct:
+                    close_result = self.close_position(symbol,
+                        reason=f"Take profit hit: {pl_pct:+.2%} (target: {take_profit_pct:.0%})")
+                    results.append({
+                        "symbol": symbol,
+                        "action": "take_profit",
+                        "pl_pct": pl_pct,
+                        "pl_dollar": pl_dollar,
+                        "threshold": take_profit_pct,
+                        "bucket": bucket,
+                        "result": close_result,
+                    })
+                    continue
+
+                # Trailing stop logic
+                if symbol in self._trailing_stops:
+                    high_water = self._trailing_stops[symbol].get("high_water", entry_price)
+                    if current_price > high_water:
+                        self._trailing_stops[symbol]["high_water"] = current_price
+                        high_water = current_price
+                    drop_from_high = (high_water - current_price) / high_water if high_water > 0 else 0
+                    if drop_from_high >= trailing_stop_pct and pl_pct > 0:
+                        close_result = self.close_position(symbol,
+                            reason=f"Trailing stop hit: dropped {drop_from_high:.2%} from high (${high_water:.2f})")
+                        results.append({
+                            "symbol": symbol,
+                            "action": "trailing_stop",
+                            "pl_pct": pl_pct,
+                            "pl_dollar": pl_dollar,
+                            "threshold": trailing_stop_pct,
+                            "bucket": bucket,
+                            "result": close_result,
+                        })
+                        continue
+                else:
+                    # Initialize trailing stop
+                    self._trailing_stops[symbol] = {
+                        "high_water": current_price,
+                        "entry_price": entry_price,
+                    }
+
+        except Exception as e:
+            print(f"Error checking stops: {e}")
+
         return results
 
     # ==========================================
-    # SIGNAL DETECTION (Enhanced with Batch Scanning - Change 1)
+    # Trading Cycle
     # ==========================================
 
-    def scan_all(self) -> List[Dict]:
-        if not TA_AVAILABLE or not PANDAS_AVAILABLE:
-            self._log_error("Missing libraries: ta or pandas")
-            return []
-
-        all_stocks = []
-        signals = []
-        watchlist = self.settings["watchlist"]
-        global_oversold = self.settings["rsi_oversold"]
-        global_overbought = self.settings["rsi_overbought"]
-        global_min_rvol = self.settings["min_rvol"]
-        global_min_confidence = self.settings.get("min_confidence", 0.20)
-        mode = self.settings["mode"]
-        use_advanced = self.settings.get("use_advanced_signals", True)
-
-        self.scan_summary = {
-            "last_scan": datetime.now().isoformat(), "stocks_scanned": len(watchlist),
-            "stocks_success": 0, "stocks_no_data": 0, "errors_count": 0,
-            "error_details": [], "data_source": "none", "mode": mode,
-            "oversold_threshold": global_oversold, "overbought_threshold": global_overbought,
-            "min_rvol_threshold": global_min_rvol, "min_confidence": global_min_confidence,
-            "advanced_signals_used": use_advanced,
-        }
-        data_source_used = "none"
-
-        # VIX filter
-        vix_ok = True
-        if self.settings.get("use_vix_filter", True) and ADVANCED_SIGNALS_AVAILABLE:
-            vix_result = self.check_vix()
-            vix_ok = vix_result.get("safe_to_trade", True)
-            self.scan_summary["vix"] = vix_result
-
-        # ===== CHANGE 1: Batch fetch data instead of one-by-one =====
-        batch_data = self._batch_fetch_data(watchlist)
-
-        # Process each symbol
-        for i, symbol in enumerate(watchlist):
-            try:
-                # Get data from batch or fallback
-                if symbol in batch_data:
-                    df = batch_data[symbol]
-                    source = "⚡ batch"
-                else:
-                    df, source = self._fetch_stock_data(symbol)
-
-                if df is None or df.empty or len(df) < 20:
-                    self.scan_summary["stocks_no_data"] += 1
-                    self.scan_summary["error_details"].append(f"{symbol}: no data")
-                    continue
-
-                if source.startswith("⚡"):
-                    data_source_used = source
-
-                rsi_series = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-                rsi = rsi_series.iloc[-1]
-                if rsi is None or (PANDAS_AVAILABLE and pd.isna(rsi)):
-                    self.scan_summary["error_details"].append(f"{symbol}: RSI is NaN")
-                    continue
-
-                avg_vol = df["volume"].rolling(20).mean().iloc[-1]
-                curr_vol = df["volume"].iloc[-1]
-                rvol = curr_vol / avg_vol if avg_vol > 0 else 0
-                price = df['close'].iloc[-1]
-
-                # Get bucket-specific thresholds
-                bucket = self.assign_bucket(symbol)
-                bucket_settings = self.get_bucket_settings(bucket)
-                oversold = bucket_settings.get("rsi_oversold", global_oversold)
-                overbought = bucket_settings.get("rsi_overbought", global_overbought)
-                min_rvol = bucket_settings.get("min_rvol", global_min_rvol)
-                min_confidence = bucket_settings.get("min_confidence", global_min_confidence)
-
-                # Cache price for bucket classification
-                sym_key = symbol.upper()
-                if sym_key in self._stock_info_cache:
-                    self._stock_info_cache[sym_key]["price"] = price
-                    self._stock_info_cache[sym_key]["timestamp"] = datetime.now()
-                else:
-                    self._stock_info_cache[sym_key] = {
-                        "price": price, "div_yield": None,
-                        "bucket": None, "timestamp": datetime.now()
-                    }
-
-                if rsi < oversold and rvol >= min_rvol: status = "BUY SIGNAL"
-                elif rsi < oversold: status = "Almost Buy (low volume)"
-                elif rsi < oversold + 10: status = "Approaching Buy"
-                elif rsi > overbought and rvol >= min_rvol: status = "SELL SIGNAL"
-                elif rsi > overbought: status = "Almost Sell (low volume)"
-                elif rsi > overbought - 10: status = "Approaching Sell"
-                else: status = "Neutral"
-
-                signal = None
-                confidence = 0.0
-                reason = ""
-                signal_details = []
-
-                # ADVANCED signals (if enabled and enough data)
-                if use_advanced and ADVANCED_SIGNALS_AVAILABLE and len(df) >= 50:
-                    advanced_result = self.scan_advanced(symbol, df)
-                    signal = advanced_result.get("signal", "HOLD")
-                    confidence = advanced_result.get("confidence", 0)
-                    reason = advanced_result.get("reason", "")
-                    signal_details = advanced_result.get("details", [])
-                    if signal == "HOLD" or signal == "":
-                        signal = None; confidence = 0; reason = ""
-                    # Block buys when VIX is high
-                    if signal and not vix_ok:
-                        signal = None; confidence = 0
-                        reason = f"Blocked by VIX filter: {vix_result.get('reason', 'VIX too high')}"
-
-                if signal is None:
-                    # FALLBACK: Basic RSI/RVOL logic (bucket-specific thresholds)
-                    if mode == "quick":
-                        if rsi < oversold and rvol >= min_rvol:
-                            signal = "BUY"; confidence = min(0.95, (oversold - rsi) / oversold + rvol / 3)
-                            reason = f"RSI={rsi:.1f} (oversold) + RVOL={rvol:.1f}. Strong bounce. [{bucket}]"
-                        elif rsi < (oversold + 5) and rvol >= (min_rvol * 1.3):
-                            signal = "BUY"; confidence = min(0.80, 0.5 + (rvol / 5))
-                            reason = f"RSI={rsi:.1f} (near oversold) + RVOL={rvol:.1f}. Volume-backed. [{bucket}]"
-                        elif rsi < oversold and rvol >= 1.0:
-                            signal = "BUY"; confidence = min(0.65, (oversold - rsi) / oversold + 0.2)
-                            reason = f"RSI={rsi:.1f} (oversold) but RVOL={rvol:.1f}. Cautious. [{bucket}]"
-                        elif rsi > overbought and rvol >= min_rvol:
-                            signal = "SELL"; confidence = min(0.95, (rsi - overbought) / (100 - overbought) + rvol / 3)
-                            reason = f"RSI={rsi:.1f} (overbought) + RVOL={rvol:.1f}. Strong sell. [{bucket}]"
-                        elif rsi > (overbought - 5) and rvol >= (min_rvol * 1.3):
-                            signal = "SELL"; confidence = min(0.80, 0.5 + (rvol / 5))
-                            reason = f"RSI={rsi:.1f} (near overbought) + RVOL={rvol:.1f}. Volume-backed exit. [{bucket}]"
-                        elif rsi > overbought and rvol >= 1.0:
-                            signal = "SELL"; confidence = min(0.65, (rsi - overbought) / (100 - overbought) + 0.2)
-                            reason = f"RSI={rsi:.1f} (overbought) but RVOL={rvol:.1f}. Cautious exit. [{bucket}]"
-                    elif mode == "longterm":
-                        if rsi < 45 and rvol < 1.5:
-                            signal = "BUY"; confidence = 0.6; reason = f"RSI={rsi:.1f} + Low volatility. Long-term entry."
-                        elif rsi < 40 and rvol >= 1.0:
-                            signal = "BUY"; confidence = 0.7; reason = f"RSI={rsi:.1f} + RVOL={rvol:.1f}. Solid entry."
-                        elif rsi > 75:
-                            signal = "SELL"; confidence = 0.7; reason = f"RSI={rsi:.1f}. Take profits."
-                        elif rsi > 80 and rvol >= 1.5:
-                            signal = "SELL"; confidence = 0.85; reason = f"RSI={rsi:.1f} + RVOL={rvol:.1f}. Strong exit."
-
-                    if signal and confidence < min_confidence:
-                        reason += f" [Below min confidence {min_confidence:.0%}]"
-                        signal = None; confidence = 0
-
-                    # VIX filter (block buys when VIX is high)
-                    if signal == "BUY" and not vix_ok:
-                        signal = None; confidence = 0
-                        reason = f"VIX filter active: {vix_result.get('reason', 'VIX too high')}"
-
-                stock_entry = {
-                    "symbol": symbol, "price": round(price, 2), "rsi": round(rsi, 1),
-                    "rvol": round(rvol, 2), "status": status,
-                    "signal": signal if signal else "", "confidence": round(confidence, 2) if signal else 0,
-                    "reason": reason, "data_source": source,
-                    "sector": SECTOR_MAP.get(symbol, "Unknown"),
-                    "bucket": bucket,
-                }
-                all_stocks.append(stock_entry)
-
-                if signal:
-                    signals.append({
-                        "symbol": symbol, "signal": signal,
-                        "confidence": round(confidence, 2), "reason": reason,
-                        "price": round(price, 2), "rsi": round(rsi, 1), "rvol": round(rvol, 2),
-                        "timestamp": datetime.now().isoformat(), "mode": mode,
-                        "sector": SECTOR_MAP.get(symbol, "Unknown"),
-                        "bucket": bucket,
-                        "details": signal_details if isinstance(signal_details, list) else [],
-                    })
-
-                self.scan_summary["stocks_success"] += 1
-            except Exception as e:
-                self.scan_summary["errors_count"] += 1
-                self.scan_summary["error_details"].append(f"{symbol}: {str(e)[:80]}")
-                self._log_error(f"Scan error: {symbol}: {str(e)[:60]}")
-                continue
-
-        def sort_key(x):
-            s = x.get("status", "")
-            if "SIGNAL" in s: return 0
-            elif "Almost" in s: return 1
-            elif "Approaching" in s: return 2
-            else: return 3
-        all_stocks.sort(key=sort_key)
-        signals.sort(key=lambda s: s["confidence"], reverse=True)
-
-        self.near_signals = all_stocks
-        self.signals_found = signals
-        self.last_scan_time = datetime.now().isoformat()
-        self.scan_summary["data_source"] = data_source_used if data_source_used != "none" else "mixed"
-        self.status_message = f"Scan done: {len(all_stocks)} stocks, {len(signals)} signals (batch mode)"
-        return all_stocks
-
-    def scan_signals(self) -> List[Dict]:
-        self.scan_all()
-        return self.signals_found
-    
-    # ==========================================
-    # RISK MANAGEMENT (Enhanced with Bucket-Specific Settings)
-    # ==========================================
-
-    def evaluate_risk(self, signal: Dict) -> Dict:
-        settings = self.settings
-        min_confidence = settings.get("min_confidence", 0.20)
-        max_same_sector = settings.get("max_same_sector", 3)
-        account = self.get_account_info()
-
-        if "error" in account:
-            return {"approved": False, "reason": f"Account error: {account['error']}"}
-
-        if self.daily_reset_date != datetime.now().date():
-            self.daily_pnl = 0.0
-            self.daily_start_equity = float(account.get("equity", 0))
-            self.daily_reset_date = datetime.now().date()
-
-        equity = float(account.get("equity", 0))
-
-        # VIX filter check
-        if settings.get("use_vix_filter", True) and ADVANCED_SIGNALS_AVAILABLE:
-            vix_result = self.check_vix()
-            if not vix_result.get("safe_to_trade", True):
-                reason = vix_result.get("reason", "VIX filter active")
-                self._log_error(f"Trade blocked by VIX filter: {reason}")
-                self.record_signal(signal, "rejected", f"VIX filter: {reason}")
-                return {"approved": False, "reason": reason}
-
-        # Daily loss limit
-        if equity > 0 and self.daily_pnl < 0 and self.daily_start_equity > 0:
-            loss_pct = abs(self.daily_pnl) / self.daily_start_equity
-            if loss_pct >= settings["daily_loss_limit_pct"]:
-                reason = f"Daily loss limit reached ({loss_pct:.1%} >= {settings['daily_loss_limit_pct']:.1%})"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-        positions = self.get_positions()
-
-        if signal["signal"] == "BUY":
-            current_symbols = [p["symbol"] for p in positions]
-            if len(positions) >= settings["max_positions"]:
-                reason = f"Max positions reached ({len(positions)}/{settings['max_positions']})"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-            if signal["symbol"] in current_symbols:
-                reason = f"Already holding {signal['symbol']}"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-            signal_sector = SECTOR_MAP.get(signal["symbol"], "Unknown")
-            sector_count = sum(1 for p in positions if SECTOR_MAP.get(p["symbol"], "Unknown") == signal_sector)
-            if sector_count >= max_same_sector:
-                reason = f"Sector limit: {sector_count}/{max_same_sector} in {signal_sector}"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-            # Check bucket allocation — skip if 0%
-            bucket = self.classify_stock(signal["symbol"])
-            bucket_pct_key = f"{bucket}_pct"
-            bucket_pct = self.settings.get(bucket_pct_key, 0.30)
-            if bucket_pct <= 0:
-                reason = f"{bucket.title()} bucket allocation is 0% — skipping"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-            # Get bucket-specific confidence threshold
-            bucket = self.classify_stock(signal["symbol"]) if signal["signal"] == "BUY" else self.assign_bucket(signal["symbol"])
-            bucket_settings = self.get_bucket_settings(bucket)
-            bucket_min_confidence = bucket_settings.get("min_confidence", min_confidence)
-
-            if signal.get("confidence", 0) < bucket_min_confidence:
-                reason = f"Confidence too low ({signal.get('confidence', 0):.2f} < {bucket_min_confidence:.2f}) [{bucket}]"
-                self._log_error(f"Trade rejected: {reason}")
-                self.record_signal(signal, "rejected", reason)
-                return {"approved": False, "reason": reason}
-
-            if signal["signal"] == "BUY":
-                bucket = self.classify_stock(signal["symbol"])
-                bucket_settings = self.get_bucket_settings(bucket)
-                bucket_max_pct = bucket_settings["max_position_pct"]
-
-                available_cash = self.get_available_trading_cash()
-
-                # ATR-based position sizing
-                if settings.get("use_atr_position_sizing", True) and ADVANCED_SIGNALS_AVAILABLE:
-                    try:
-                        df, source = self._fetch_stock_data(signal["symbol"])
-                        if df is not None and len(df) >= 15:
-                            atr = calculate_atr(df)
-                            if atr > 0:
-                                risk_amount = equity * settings.get("atr_risk_pct", 0.01)
-                                risk_per_share = 2 * atr
-                                qty = max(1, int(risk_amount / risk_per_share))
-                                position_value = qty * signal["price"]
-                                max_position_value = equity * bucket_max_pct
-                                if position_value > max_position_value:
-                                    qty = max(1, int(max_position_value / signal["price"]))
-                                    position_value = qty * signal["price"]
-                                if position_value > available_cash * 0.95:
-                                    qty = max(1, int((available_cash * 0.95) / signal["price"]))
-                                    position_value = qty * signal["price"]
-                            else:
-                                max_position_value = equity * bucket_max_pct
-                                position_value = min(max_position_value, available_cash * 0.95)
-                                qty = max(1, int(position_value / signal["price"]))
-                        else:
-                            max_position_value = equity * bucket_max_pct
-                            position_value = min(max_position_value, available_cash * 0.95)
-                            qty = max(1, int(position_value / signal["price"]))
-                    except Exception:
-                        max_position_value = equity * bucket_max_pct
-                        position_value = min(max_position_value, available_cash * 0.95)
-                        qty = max(1, int(position_value / signal["price"]))
-                else:
-                    max_position_value = equity * bucket_max_pct
-                    position_value = min(max_position_value, available_cash * 0.95)
-                    qty = max(1, int(position_value / signal["price"]))
-
-                if qty <= 0:
-                    reason = "Insufficient trading cash (withdrawal pot protected)"
-                    self._log_error(f"Trade rejected: {reason}")
-                    self.record_signal(signal, "rejected", reason)
-                    return {"approved": False, "reason": reason}
-
-                # Bucket-specific stop loss and take profit
-                bucket_sl = bucket_settings["stop_loss_pct"]
-                bucket_tp = bucket_settings["take_profit_pct"]
-
-                self.record_signal(signal, "executed", "")
-                return {
-                    "approved": True, "symbol": signal["symbol"], "side": "buy",
-                    "qty": qty, "price": signal["price"],
-                    "estimated_cost": round(qty * signal["price"], 2),
-                    "stop_loss": round(signal["price"] * (1 - bucket_sl), 2),
-                    "take_profit": round(signal["price"] * (1 + bucket_tp), 2),
-                    "reason": signal["reason"], "confidence": signal["confidence"],
-                    "bucket": bucket,
-                }
-
-        elif signal["signal"] == "SELL":
-            bucket = self.assign_bucket(signal["symbol"])
-            for pos in positions:
-                if pos["symbol"] == signal["symbol"]:
-                    self.record_signal(signal, "executed", "")
-                    return {
-                        "approved": True, "symbol": signal["symbol"], "side": "sell",
-                        "qty": float(pos["qty"]), "price": signal["price"],
-                        "reason": signal["reason"], "confidence": signal["confidence"],
-                        "bucket": bucket,
-                    }
-            reason = f"No position in {signal['symbol']} to sell"
-            self._log_error(f"Trade rejected: {reason}")
-            self.record_signal(signal, "rejected", reason)
-            return {"approved": False, "reason": reason}
-
-        return {"approved": False, "reason": "Unknown signal type"}
-
-    # ==========================================
-    # DISCORD ALERTS
-    # ==========================================
-
-    def send_alert(self, message: str):
-        webhook_url = self.settings.get("discord_webhook_url", "")
-        if webhook_url:
-            try:
-                from core.alerts import send_discord_alert
-                send_discord_alert(webhook_url, message)
-            except Exception as e:
-                self._log_error(f"Discord alert failed: {e}")
-
-    # ==========================================
-    # ORDER EXECUTION
-    # ==========================================
-
-    def place_order(self, approval: Dict, username: str = "system") -> Dict:
-        if not self.api or not self.connected:
-            return {"error": "Not connected to Alpaca"}
+    def run_cycle(self):
+        """Run one complete trading cycle."""
         try:
-            order = self.api.submit_order(symbol=approval["symbol"], qty=approval["qty"],
-                                           side=approval["side"], type="market", time_in_force="day")
-
-            time.sleep(2)
-            filled_price = approval["price"]
-            filled_qty = approval["qty"]
-            order_status = order.status
-            try:
-                updated_order = self.api.get_order(order.id)
-                order_status = updated_order.status
-                if hasattr(updated_order, 'filled_avg_price') and updated_order.filled_avg_price:
-                    filled_price = float(updated_order.filled_avg_price)
-                if hasattr(updated_order, 'filled_qty') and updated_order.filled_qty:
-                    filled_qty = float(updated_order.filled_qty)
-            except Exception: pass
-
-            slippage = filled_price * (self.settings.get("slippage_pct", 0.05) / 100)
-            sec_fee = filled_price * (self.settings.get("sec_fee_pct", 0.00002) / 100) if approval["side"] == "sell" else 0
-
-            bucket = approval.get("bucket", self.assign_bucket(approval["symbol"]))
-            if bucket == "long_term": bucket = "dividend"
-
-            trade_record = {
-                "timestamp": datetime.now().isoformat(), "symbol": approval["symbol"], "side": approval["side"],
-                "qty": approval["qty"], "price": approval["price"],
-                "filled_price": filled_price, "filled_qty": filled_qty,
-                "slippage_cost": round(slippage * filled_qty, 4),
-                "sec_fee": round(sec_fee * filled_qty, 4),
-                "order_id": str(order.id), "status": order_status,
-                "reason": approval.get("reason", ""), "confidence": approval.get("confidence", 0),
-                "stop_loss": approval.get("stop_loss", ""), "take_profit": approval.get("take_profit", ""),
-                "estimated_cost": approval.get("estimated_cost", 0),
-                "sector": SECTOR_MAP.get(approval["symbol"], "Unknown"), "bucket": bucket,
-            }
-            self.trade_log.append(trade_record)
-            self._save_trade_log()
-            self.status_message = f"Order placed: {approval['side'].upper()} {approval['qty']} {approval['symbol']}"
-
-            # Get bucket-specific settings for Discord message
-            bucket_settings = self.get_bucket_settings(bucket)
-            bucket_sl = bucket_settings.get("stop_loss_pct", self.settings.get("stop_loss_pct", 0.05))
-            bucket_tp = bucket_settings.get("take_profit_pct", self.settings.get("take_profit_pct", 0.10))
-
-            if AUDIT_AVAILABLE:
-                try: log_trade_audit(username, {"symbol": approval["symbol"], "side": approval["side"], "qty": approval["qty"], "price": approval["price"], "filled_price": filled_price, "bucket": bucket, "confidence": approval.get("confidence", 0), "reason": approval.get("reason", ""), "order_id": str(order.id)})
-                except Exception: pass
-
-            # Discord alert (privacy mode)
-            bucket_icon = self.get_bucket_icon(bucket)
-            bucket_name = bucket.title()
-            if self.settings.get("discord_privacy_mode", True):
-                self.send_alert(f"🚨 **Trade Executed!**\n{bucket_icon} **{approval['side'].upper()}** **{approval['symbol']}** ({bucket_name})\nConfidence: {approval.get('confidence', 0):.0%} | Stop: {bucket_sl:.0%} | Target: {bucket_tp:.0%}")
-            else:
-                self.send_alert(f"🚨 **Trade Executed!**\n{bucket_icon} **{approval['side'].upper()}** {approval['qty']} shares of **{approval['symbol']}** at ${approval['price']:.2f}\nBucket: {bucket_name} | Stop: {bucket_sl:.0%} | Target: {bucket_tp:.0%}\nReason: {approval.get('reason', 'N/A')}\nConfidence: {approval.get('confidence', 0):.0%}")
-
-            # Apply profit skimming after sell
-            if approval["side"] == "sell":
-                sell_value = filled_price * filled_qty
-                self._apply_profit_skimming(approval["symbol"], sell_value, bucket)
-
-            return trade_record
-        except Exception as e:
-            self._log_error(f"Order failed: {e}")
-            if AUDIT_AVAILABLE:
-                try: log_audit(username, "trade_failed", "trading", symbol=approval.get("symbol", ""), details={"error": str(e), "approval": approval})
-                except Exception: pass
-            return {"error": str(e)}
-
-    def close_position(self, symbol: str, reason: str = "") -> Dict:
-        if not self.api or not self.connected:
-            return {"error": "Not connected"}
-        try:
-            positions = self.get_positions()
-            current_price = 0.0
-            for pos in positions:
-                if pos["symbol"] == symbol:
-                    current_price = float(pos["current_price"])
-                    break
-            order = self.api.close_position(symbol)
-            bucket = self.assign_bucket(symbol)
-            if bucket == "long_term": bucket = "dividend"
-            trade_record = {
-                "timestamp": datetime.now().isoformat(), "symbol": symbol, "side": "sell", "qty": 0, "price": current_price,
-                "order_id": str(order.id), "status": order.status, "reason": reason,
-                "sector": SECTOR_MAP.get(symbol, "Unknown"), "bucket": bucket,
-            }
-            self.trade_log.append(trade_record)
-            self._save_trade_log()
-
-            if bucket == "penny" and self.settings.get("penny_profits_to_growth", True): self.move_profits()
-            elif bucket == "growth" and self.settings.get("growth_profits_to_dividend", True): self.move_profits()
-
-            return trade_record
-        except Exception as e:
-            self._log_error(f"Close position failed for {symbol}: {e}")
-            return {"error": str(e)}
-
-    # ==========================================
-    # STOP LOSS & TAKE PROFIT (Bucket-Specific)
-    # ==========================================
-
-    def check_stops(self) -> List[Dict]:
-        if not self.api or not self.connected: return []
-        try:
-            positions = self.api.list_positions()
-        except Exception:
-            return []
-        if not positions: return []
-        closed = []
-        for pos in positions:
-            symbol = pos.symbol
-            entry_price = float(pos.avg_entry_price)
-            current_price = float(pos.current_price)
-            pl_pct = float(pos.unrealized_plpc)
-            bucket = self.assign_bucket(symbol)
-            bucket_settings = self.get_bucket_settings(bucket)
-
-            stop_loss_pct = bucket_settings["stop_loss_pct"]
-            take_profit_pct = bucket_settings["take_profit_pct"]
-            trailing_stop_pct = bucket_settings["trailing_stop_pct"]
-
-            if pl_pct <= -(stop_loss_pct):
-                result = self.close_position(symbol, f"Stop loss ({bucket}): {pl_pct:.2%}")
-                if "error" not in result:
-                    closed.append({"symbol": symbol, "action": "stop_loss", "pl_pct": round(pl_pct, 4),
-                                   "entry_price": entry_price, "exit_price": current_price,
-                                   "reason": f"Stop loss ({bucket}): down {pl_pct:.2%}", "bucket": bucket})
-            elif pl_pct >= take_profit_pct:
-                result = self.close_position(symbol, f"Take profit ({bucket}): {pl_pct:.2%}")
-                if "error" not in result:
-                    closed.append({"symbol": symbol, "action": "take_profit", "pl_pct": round(pl_pct, 4),
-                                   "entry_price": entry_price, "exit_price": current_price,
-                                   "reason": f"Take profit ({bucket}): up {pl_pct:.2%}", "bucket": bucket})
-            elif pl_pct >= 0.05:
-                trailing_trigger = entry_price * (1 + 0.05)
-                trailing_stop = current_price * (1 + trailing_stop_pct)
-                if current_price <= trailing_stop and current_price >= trailing_trigger:
-                    result = self.close_position(symbol, f"Trailing stop ({bucket}): {pl_pct:.2%}")
-                    if "error" not in result:
-                        closed.append({"symbol": symbol, "action": "trailing_stop", "pl_pct": round(pl_pct, 4),
-                                       "entry_price": entry_price, "exit_price": current_price,
-                                       "reason": f"Trailing stop ({bucket}): {pl_pct:.2%}", "bucket": bucket})
-        return closed
-
-    # ==========================================
-    # MAIN TRADING CYCLE
-    # ==========================================
-
-    def run_cycle(self) -> Dict:
-        with self._lock:
             self.cycle_count += 1
-            cycle_log = {"cycle": self.cycle_count, "timestamp": datetime.now().isoformat(),
-                         "signals": [], "trades": [], "stops": [], "errors": [],
-                         "profit_extraction": None, "dividends": None}
+            self.status_message = f"Running cycle {self.cycle_count}..."
 
-            if not self.connected:
-                self._log_error(f"Cycle {self.cycle_count}: Not connected, reconnecting...")
-                if not self._reconnect():
-                    self.consecutive_failures += 1
-                    return cycle_log
-
+            # Check and reset daily counters
             self._check_and_reset_daily()
 
-            try:
-                stops = self.check_stops()
-                cycle_log["stops"] = stops
-                for s in stops:
-                    self.status_message = f"{s['action']}: {s['symbol']} - {s['reason']}"
-            except Exception as e:
-                self._log_error(f"Stop check error: {e}")
+            # Check market open
+            market = self.is_market_open()
+            if not market.get("is_open", False):
+                self.status_message = f"Market closed. Cycle {self.cycle_count} skipped."
+                return
 
+            # Check VIX filter
+            if self.settings.get("use_vix_filter", True):
+                vix_result = self.check_vix()
+                if not vix_result.get("safe_to_trade", True):
+                    self.status_message = vix_result.get("reason", "VIX filter active")
+                    return
+
+            # Reset daily P&L at start of day
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            last_cycle_date = self.trade_log[-1].get("timestamp", "")[:10] if self.trade_log else ""
+            if last_cycle_date != today:
+                account = self.get_account_info()
+                if "error" not in account:
+                    self._daily_start_equity = account.get("equity", 0)
+                    self.daily_pnl = 0.0
+
+            # Scan for signals
+            self.scan_all()
+
+            # Process BUY signals
+            for signal in self.signals_found:
+                if signal["signal"] == "BUY":
+                    risk = self.evaluate_risk(signal["symbol"], signal)
+                    if risk["approved"]:
+                        self.place_order(
+                            symbol=signal["symbol"],
+                            side="buy",
+                            bucket=signal.get("bucket"),
+                            confidence=signal.get("confidence", 0),
+                            reason=signal.get("reason", ""),
+                        )
+
+            # Check stops and take profits
+            stop_results = self.check_stops()
+
+            # Check for dividends
             try:
                 div_result = self.check_dividends()
-                cycle_log["dividends"] = div_result
-            except Exception as e:
-                self._log_error(f"Dividend check error: {e}")
+                if div_result.get("dividends_found", 0) > 0:
+                    for d in div_result.get("details", []):
+                        self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + d.get("amount", 0)
+                        self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + d.get("amount", 0)
+            except Exception:
+                pass
 
-            # --- Check for new listings & IPOs (once per day) ---
+            # Check profit extraction
+            if self.settings.get("auto_extract_profits", True):
+                try:
+                    self.extract_profits()
+                except Exception:
+                    pass
+
+            # Update buckets
+            self._update_buckets()
+
+            # Record equity snapshot
             try:
-                if IPO_SCANNER_AVAILABLE:
-                    today_date = datetime.now().date().isoformat()
-                    # Only run the full scan once per day to avoid API spam
-                    if self.last_ipo_scan_date != today_date:
-                        ipo_results = self.scan_new_listings()
-                        # Optionally auto-add new symbols if setting is enabled
-                        if self.settings.get("watchlist_auto_add", False) and ipo_results.get("new_symbols"):
-                            self.auto_add_new_to_watchlist(ipo_results["new_symbols"])
-            except Exception as e:
-                self._log_error(f"IPO scan error in cycle: {e}")
+                self.record_equity_snapshot()
+            except Exception:
+                pass
 
-            try:
-                if self.settings.get("auto_extract_profits", True):
-                    ov = self.get_bucket_overview()
-                    if ov.get("profit_threshold_hit", False):
-                        extraction = self.extract_profits()
-                        cycle_log["profit_extraction"] = extraction
-                        if extraction.get("status") == "extracted":
-                            self._log_error(f"Profit extracted: {extraction.get('message', '')}")
-            except Exception as e:
-                self._log_error(f"Profit extraction error: {e}")
-
-            try:
-                self.scan_all()
-                active_signals = self.signals_found
-                cycle_log["signals"] = [{"symbol": s["symbol"], "signal": s["signal"], "confidence": s["confidence"]} for s in active_signals]
-            except Exception as e:
-                self._log_error(f"Scan error: {e}")
-                self.consecutive_failures += 1
-                return cycle_log
-
-            for signal in active_signals:
-                if signal["signal"] == "BUY":
-                    market = self.is_market_open()
-                    if not market.get("is_open", True):
-                        self.record_signal(signal, "rejected", "Market closed")
-                        continue
-                    try:
-                        approval = self.evaluate_risk(signal)
-                        if not approval.get("approved", False):
-                            cycle_log["trades"].append({"symbol": signal["symbol"], "action": "rejected", "reason": approval.get("reason", "")})
-                            continue
-                        result = self.place_order(approval)
-                        if "error" not in result:
-                            cycle_log["trades"].append({"symbol": approval["symbol"], "action": "executed", "side": approval["side"], "qty": approval["qty"], "price": approval["price"], "reason": approval.get("reason", "")})
-                            self.consecutive_failures = 0
-                        else:
-                            cycle_log["trades"].append({"symbol": signal["symbol"], "action": "error", "reason": result["error"]})
-                    except Exception as e:
-                        self._log_error(f"Trade execution error for {signal['symbol']}: {e}")
-
+            # Update P&L
             try:
                 account = self.get_account_info()
-                if "error" not in account and self.daily_start_equity > 0:
-                    self.daily_pnl = float(account.get("equity", 0)) - self.daily_start_equity
-            except Exception: pass
+                if "error" not in account:
+                    current_equity = account.get("equity", 0)
+                    self.daily_pnl = current_equity - self._daily_start_equity
+                    self.last_equity = current_equity
+            except Exception:
+                pass
 
-            self.record_equity_snapshot()
+            self._save_trade_log()
+            self.status_message = f"Cycle {self.cycle_count} complete. Signals: {len(self.signals_found)}, Stops: {len(stop_results)}"
 
-            self.last_successful_cycle = datetime.now().isoformat()
-            self.consecutive_failures = 0
-            self.status_message = f"Cycle {self.cycle_count} done. {len(active_signals)} signals."
-            cycle_log["errors"] = self.errors[-10:] if self.errors else []
-            return cycle_log
+        except Exception as e:
+            self.status_message = f"Cycle error: {str(e)}"
 
     # ==========================================
-    # BACKGROUND THREAD
+    # Sell Everything / Move / Redistribute
     # ==========================================
 
-    def start(self):
-        if self.running:
-            self.status_message = "Already running."
-            return False
-        if not self.connected:
-            self.status_message = "Not connected. Connect to Alpaca first."
-            return False
-        if not self.terms_accepted:
-            self.status_message = "Terms of service must be accepted before trading."
-            self._log_error("Bot start blocked: Terms of service not accepted")
-            return False
-        self.running = True
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._run_loop, daemon=True)
-        self.thread.start()
-        market = self.is_market_open()
-        if not market.get("is_open", True):
-            self.status_message = f"Bot started. Market closed. Next: {market.get('next_open', '?')}"
-        else:
-            self.status_message = "Trading bot started."
-        return True
+    def sell_everything(self) -> Dict:
+        """Sell all open positions and move proceeds to withdrawal pot."""
+        try:
+            if not self.connected or not self.api:
+                return {"status": "error", "message": "Not connected to Alpaca"}
 
-    def stop(self):
-        self.running = False
-        self._stop_event.set()
-        self.status_message = "Trading bot stopped."
-        return True
+            positions = self.get_positions()
+            if not positions:
+                return {"status": "no_positions", "message": "No open positions to sell."}
 
-    def _run_loop(self):
-        while self.running and not self._stop_event.is_set():
+            positions_sold = []
+            total_value = 0.0
+            errors = []
+
+            for p in positions:
+                symbol = p["symbol"]
+                bucket = p.get("bucket", self.classify_stock(symbol))
+                qty = p["qty"]
+                market_value = p.get("market_value", 0)
+                pl_pct = p.get("unrealized_plpc", 0)
+                pl_dollar = p.get("unrealized_pl", 0)
+                current_price = p.get("current_price", 0)
+
+                try:
+                    order = self.api.submit_order(
+                        symbol=symbol, qty=qty, side="sell",
+                        type="market", time_in_force="day",
+                    )
+                    positions_sold.append({
+                        "symbol": symbol,
+                        "bucket": bucket,
+                        "qty": qty,
+                        "market_value": market_value,
+                        "pl_pct": pl_pct,
+                        "current_price": current_price,
+                    })
+                    total_value += market_value
+
+                    # Handle profit skimming on sell
+                    skim_pct = self.settings.get("profit_skim_pct", 1.0)
+                    pl_dollar = p.get("unrealized_pl", 0)
+                    if pl_dollar > 0 and skim_pct > 0:
+                        profit_to_withdraw = pl_dollar * skim_pct
+                        self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + profit_to_withdraw
+                        self.buckets["withdrawal"]["profits_extracted"] = self.buckets["withdrawal"].get("profits_extracted", 0) + profit_to_withdraw
+
+                    # Log the trade
+                    trade_entry = {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "symbol": symbol,
+                        "side": "sell",
+                        "qty": qty,
+                        "price": current_price,
+                        "bucket": bucket,
+                        "confidence": 0,
+                        "reason": "Sell everything",
+                        "pl": pl_dollar,
+                        "pl_pct": pl_pct,
+                        "market_value": market_value,
+                    }
+                    self.trade_log.append(trade_entry)
+
+                    # Remove trailing stop
+                    if symbol in self._trailing_stops:
+                        del self._trailing_stops[symbol]
+
+                except Exception as e:
+                    errors.append(f"{symbol}: {str(e)}")
+                    positions_sold.append({
+                        "symbol": symbol,
+                        "bucket": bucket,
+                        "market_value": market_value,
+                        "pl_pct": pl_pct,
+                        "error": str(e),
+                    })
+
+            # Move all proceeds to withdrawal pot
+            if total_value > 0:
+                self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + total_value
+            self._save_trade_log()
+
+            self.send_alert(
+                f"🛑 **SELL EVERYTHING** — Sold {len(positions_sold)} positions worth ${total_value:,.2f}. "
+                f"Proceeds moved to 🟡 Withdrawal Pot."
+            )
+
+            msg = f"Sold {len(positions_sold)} positions worth ${total_value:,.2f}. Proceeds moved to Withdrawal Pot."
+            if errors:
+                msg += f" Errors: {len(errors)}"
+
+            return {
+                "status": "sold",
+                "message": msg,
+                "positions_sold": positions_sold,
+                "total_value": total_value,
+                "errors": errors,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def move_from_withdrawal(self, amount: float, bucket: str) -> Dict:
+        """Move money from the withdrawal pot to a trading bucket."""
+        try:
+            available = self.buckets["withdrawal"].get("available", 0)
+            if amount <= 0:
+                return {"status": "error", "message": "Amount must be positive."}
+            if amount > available:
+                return {"status": "error", "message": f"Amount ${amount:,.2f} exceeds available ${available:,.2f} in Withdrawal Pot."}
+
+            # Normalize bucket name
+            if bucket == "long_term":
+                bucket = "dividend"
+
+            if bucket not in ["dividend", "growth", "penny"]:
+                return {"status": "error", "message": f"Invalid bucket: {bucket}"}
+
+            self.buckets["withdrawal"]["available"] -= amount
+            self.buckets[bucket]["total_deposited"] = self.buckets[bucket].get("total_deposited", 0) + amount
+            self._save_trade_log()
+
+            bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+            self.send_alert(
+                f"💸 Moved ${amount:,.2f} from 🟡 Withdrawal to {bucket_icon} {bucket.title()} Pot."
+            )
+
+            if AUDIT_AVAILABLE and self.username:
+                try:
+                    log_audit(self.username, "move_from_withdrawal",
+                             f"Moved ${amount:.2f} to {bucket}")
+                except Exception:
+                    pass
+
+            return {
+                "status": "success",
+                "message": f"Moved ${amount:,.2f} from Withdrawal Pot to {bucket.title()} Pot.",
+                "amount": amount,
+                "bucket": bucket,
+                "withdrawal_remaining": self.buckets["withdrawal"]["available"],
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def redistribute_from_withdrawal(self) -> Dict:
+        """Redistribute the entire withdrawal pot across trading buckets based on allocation percentages."""
+        try:
+            available = self.buckets["withdrawal"].get("available", 0)
+            if available <= 0:
+                return {"status": "error", "message": "No money in Withdrawal Pot to redistribute."}
+
+            div_pct = self.settings.get("dividend_pct", 0.35)
+            gro_pct = self.settings.get("growth_pct", 0.35)
+            pen_pct = self.settings.get("penny_pct", 0.30)
+
+            total_pct = div_pct + gro_pct + pen_pct
+            if total_pct <= 0:
+                return {"status": "error", "message": "Allocation percentages must add up to more than 0."}
+
+            # Normalize
+            div_pct /= total_pct
+            gro_pct /= total_pct
+            pen_pct /= total_pct
+
+            div_amount = available * div_pct
+            gro_amount = available * gro_pct
+            pen_amount = available * pen_pct
+
+            self.buckets["withdrawal"]["available"] = 0
+            self.buckets["dividend"]["total_deposited"] = self.buckets["dividend"].get("total_deposited", 0) + div_amount
+            self.buckets["growth"]["total_deposited"] = self.buckets["growth"].get("total_deposited", 0) + gro_amount
+            self.buckets["penny"]["total_deposited"] = self.buckets["penny"].get("total_deposited", 0) + pen_amount
+            self._save_trade_log()
+
+            self.send_alert(
+                f"🔄 **Redistributed** ${available:,.2f} from Withdrawal Pot → "
+                f"🟢 Dividend ${div_amount:,.2f} | 🔵 Growth ${gro_amount:,.2f} | 🔴 Penny ${pen_amount:,.2f}"
+            )
+
+            if AUDIT_AVAILABLE and self.username:
+                try:
+                    log_audit(self.username, "redistribute_from_withdrawal",
+                             f"Redistributed ${available:.2f}")
+                except Exception:
+                    pass
+
+            return {
+                "status": "success",
+                "message": f"Redistributed ${available:,.2f}: 🟢 Dividend ${div_amount:,.2f}, 🔵 Growth ${gro_amount:,.2f}, 🔴 Penny ${pen_amount:,.2f}",
+                "dividend_amount": div_amount,
+                "growth_amount": gro_amount,
+                "penny_amount": pen_amount,
+                "total_redistributed": available,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    # ==========================================
+    # Profit Extraction
+    # ==========================================
+
+    def extract_profits(self) -> Dict:
+        """Extract profits above threshold and move to withdrawal pot."""
+        try:
+            account = self.get_account_info()
+            if "error" in account:
+                return {"status": "error", "message": f"Cannot get account info: {account['error']}"}
+
+            equity = account.get("equity", 0)
+            original_capital = self.buckets.get("original_capital", equity)
+
+            if original_capital <= 0:
+                return {"status": "error", "message": "Original capital not set."}
+
+            total_profit = equity - original_capital
+            profit_pct = total_profit / original_capital if original_capital > 0 else 0
+
+            use_pct = self.settings.get("use_pct_threshold", False)
+            threshold_pct = self.settings.get("profit_threshold_pct", 0.20)
+            threshold_amount = self.settings.get("profit_threshold_amount", 20000)
+
+            # Check threshold
+            if use_pct:
+                if profit_pct < threshold_pct:
+                    return {
+                        "status": "below_threshold",
+                        "message": f"Profit {profit_pct:+.1%} is below {threshold_pct:.0%} threshold. Current profit: ${total_profit:+,.2f}",
+                    }
+            else:
+                if total_profit < threshold_amount:
+                    return {
+                        "status": "below_threshold",
+                        "message": f"Profit ${total_profit:,.2f} is below ${threshold_amount:,.0f} threshold.",
+                    }
+
+            # Find most profitable positions
+            positions = self.get_positions()
+            if not positions:
+                return {"status": "below_threshold", "message": "No positions to extract profit from."}
+
+            profitable = sorted(
+                [p for p in positions if p.get("unrealized_plpc", 0) > 0],
+                key=lambda x: x.get("unrealized_plpc", 0),
+                reverse=True,
+            )
+
+            if not profitable:
+                return {"status": "below_threshold", "message": "No profitable positions to extract."}
+
+            # Sell the most profitable position
+            best = profitable[0]
+            symbol = best["symbol"]
+            pl = best.get("unrealized_pl", 0)
+            pl_pct = best.get("unrealized_plpc", 0)
+
+            close_result = self.close_position(symbol, reason=f"Profit extraction: {pl_pct:+.2%}")
+
+            if close_result.get("status") == "success":
+                skim_pct = self.settings.get("profit_skim_pct", 1.0)
+                profit_to_withdraw = pl * skim_pct if pl > 0 else 0
+
+                self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + profit_to_withdraw
+                self.buckets["withdrawal"]["profits_extracted"] = self.buckets["withdrawal"].get("profits_extracted", 0) + profit_to_withdraw
+                self._update_buckets()
+                self._save_trade_log()
+
+                bucket = best.get("bucket", self.classify_stock(symbol))
+                bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+                self.send_alert(
+                    f"⚡ **Profit Extraction** — Sold {bucket_icon} **{symbol}** ({bucket.title()}) "
+                    f"P&L: ${pl:+,.2f} ({pl_pct:+.2%}). Skimmed ${profit_to_withdraw:,.2f} to 🟡 Withdrawal Pot."
+                )
+
+                if AUDIT_AVAILABLE and self.username:
+                    try:
+                        log_audit(self.username, "profit_extraction",
+                                 f"Extracted ${profit_to_withdraw:.2f} from {symbol}")
+                    except Exception:
+                        pass
+
+                return {
+                    "status": "extracted",
+                    "message": f"Extracted ${profit_to_withdraw:,.2f} profit from {symbol} ({bucket.title()}) to Withdrawal Pot.",
+                    "symbol": symbol,
+                    "bucket": bucket,
+                    "pl": pl,
+                    "pl_pct": pl_pct,
+                    "amount_withdrawn": profit_to_withdraw,
+                }
+            else:
+                return {"status": "error", "message": f"Failed to close {symbol}: {close_result.get('message', 'Unknown')}"}
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # ==========================================
+    # Dividend Methods
+    # ==========================================
+
+    def check_dividends(self) -> Dict:
+        """Check for dividend payments received on current positions."""
+        try:
+            if not self.connected or not self.api:
+                return {"status": "error", "message": "Not connected to Alpaca"}
+
+            positions = self.get_positions()
+            dividends_found = 0.0
+            details = []
+
+            for p in positions:
+                symbol = p["symbol"]
+                qty = p["qty"]
+                try:
+                    if YF_AVAILABLE:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+                        div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 0:
+                            hist = ticker.history(period="1y")
+                            if not hist.empty and 'Dividends' in hist.columns:
+                                recent_divs = hist['Dividends'][hist['Dividends'] > 0]
+                                if not recent_divs.empty:
+                                    last_div_date = recent_divs.index[-1]
+                                    last_div_amount = float(recent_divs.iloc[-1])
+                                    days_since = (datetime.utcnow() - last_div_date.to_pydatetime().replace(tzinfo=None)).days
+
+                                    if days_since <= 7:
+                                        bucket = self.classify_stock(symbol)
+                                        total_div = last_div_amount * qty
+                                        dividends_found += total_div
+                                        details.append({
+                                            "symbol": symbol,
+                                            "amount": round(total_div, 2),
+                                            "per_share": round(last_div_amount, 4),
+                                            "date": str(last_div_date.date()),
+                                            "bucket": bucket,
+                                            "yield": round(div_yield * 100, 2),
+                                            "shares": qty,
+                                        })
+                except Exception:
+                    continue
+
+            # Update withdrawal bucket with dividends
+            if dividends_found > 0:
+                self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + dividends_found
+                self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + dividends_found
+                self._save_trade_log()
+
+                # Log dividend trade entries
+                for d in details:
+                    self.trade_log.append({
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "symbol": d["symbol"],
+                        "side": "dividend",
+                        "qty": d.get("shares", 0),
+                        "price": d.get("per_share", 0),
+                        "bucket": d.get("bucket", "dividend"),
+                        "confidence": 1.0,
+                        "reason": f"Dividend payment: ${d['amount']:.2f}",
+                        "pl": d.get("amount", 0),
+                        "pl_pct": 0,
+                    })
+
+                if DB_AVAILABLE and self.username:
+                    try:
+                        db = SessionLocal()
+                        for d in details:
+                            try:
+                                record_dividend(db, self.username, d["symbol"], d["amount"], d["date"])
+                            except Exception:
+                                pass
+                        db.close()
+                    except Exception:
+                        pass
+
+            return {
+                "status": "success",
+                "dividends_found": round(dividends_found, 2),
+                "details": details,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def get_upcoming_dividends(self, days_ahead: int = 60) -> List[Dict]:
+        """Get upcoming ex-dividend dates for watchlist stocks."""
+        results = []
+        try:
+            if DIVIDEND_CALENDAR_AVAILABLE:
+                try:
+                    upcoming = get_upcoming_ex_dividends(days_ahead=days_ahead)
+                    if upcoming:
+                        return upcoming
+                except Exception:
+                    pass
+
+            # Fallback: use yfinance
+            watchlist = self.settings.get("watchlist", [])
+            for symbol in watchlist:
+                try:
+                    if YF_AVAILABLE:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+                        div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 0:
+                            ex_date_raw = info.get("exDividendDate", None)
+                            if ex_date_raw:
+                                try:
+                                    if isinstance(ex_date_raw, (int, float)):
+                                        ex_date = datetime.fromtimestamp(ex_date_raw).strftime("%Y-%m-%d")
+                                    else:
+                                        ex_date = str(ex_date_raw)[:10]
+                                except Exception:
+                                    ex_date = str(ex_date_raw)[:10]
+                            else:
+                                ex_date = "N/A"
+                            results.append({
+                                "symbol": symbol,
+                                "ex_date": ex_date,
+                                "dividend_yield": round(div_yield * 100, 2),
+                                "bucket": self.classify_stock(symbol),
+                            })
+                except Exception:
+                    continue
+
+            results.sort(key=lambda x: x.get("dividend_yield", 0), reverse=True)
+            return results
+
+        except Exception:
+            return results
+
+    def get_dividend_history(self) -> List[Dict]:
+        """Get dividend payment history."""
+        try:
+            if DIVIDEND_CALENDAR_AVAILABLE:
+                try:
+                    external = get_div_history_external(self.username)
+                    if external:
+                        return external
+                except Exception:
+                    pass
+
+            # Fallback: from trade log
+            div_trades = []
+            for t in self.trade_log:
+                if t.get("side") == "dividend" or "dividend" in t.get("reason", "").lower():
+                    div_trades.append(t)
+            return div_trades
+
+        except Exception:
+            return []
+
+    def get_dividend_stock_comparison(self) -> List[Dict]:
+        """Compare dividend stocks in the watchlist."""
+        results = []
+        try:
+            watchlist = self.settings.get("watchlist", [])
+            for symbol in watchlist:
+                try:
+                    if YF_AVAILABLE:
+                        ticker = yf.Ticker(symbol)
+                        info = ticker.info or {}
+                        div_yield = info.get("dividendYield", 0) or 0
+                        if div_yield > 0:
+                            payout_ratio = info.get("payoutRatio", 0) or 0
+                            price = info.get("currentPrice", info.get("regularMarketPrice", 0))
+                            market_cap = info.get("marketCap", 0) or 0
+                            five_year_avg_yield = info.get("fiveYearAvgDividendYield", 0) or 0
+
+                            # Get dividend growth
+                            div_growth_rate = 0
+                            try:
+                                hist = ticker.history(period="5y")
+                                if not hist.empty and 'Dividends' in hist.columns:
+                                    annual_divs = hist['Dividends'][hist['Dividends'] > 0].resample('Y').sum()
+                                    if len(annual_divs) >= 2:
+                                        first_div = annual_divs.iloc[0]
+                                        last_div = annual_divs.iloc[-1]
+                                        years = len(annual_divs) - 1
+                                        if first_div > 0 and years > 0:
+                                            div_growth_rate = ((last_div / first_div) ** (1 / years) - 1) * 100
+                            except Exception:
+                                pass
+
+                            results.append({
+                                "symbol": symbol,
+                                "dividend_yield_pct": round(div_yield * 100, 2),
+                                "payout_ratio_pct": round(payout_ratio * 100, 1),
+                                "price": price,
+                                "market_cap": market_cap,
+                                "five_year_avg_yield": five_year_avg_yield,
+                                "div_growth_rate": round(div_growth_rate, 2),
+                                "bucket": self.classify_stock(symbol),
+                            })
+                except Exception:
+                    continue
+
+            results.sort(key=lambda x: x.get("dividend_yield_pct", 0), reverse=True)
+            return results
+
+        except Exception:
+            return results
+
+    def calculate_drip_for_position(self, symbol: str, shares: int) -> Dict:
+        """Calculate DRIP projection for a position."""
+        try:
+            if not YF_AVAILABLE:
+                return {"error": "yfinance not available"}
+
+            ticker = yf.Ticker(symbol)
+            info = ticker.info or {}
+
+            price = info.get("currentPrice", info.get("regularMarketPrice", 0))
+            div_yield = info.get("dividendYield", 0) or 0
+
+            if not price or price <= 0:
+                hist = ticker.history(period="5d")
+                if not hist.empty:
+                    price = float(hist['Close'].iloc[-1])
+
+            if not price or price <= 0:
+                return {"error": f"Cannot get price for {symbol}"}
+
+            initial_value = price * shares
+            annual_projections = []
+            years = 10
+            total_dividends = 0.0
+            current_shares = float(shares)
+            current_value = initial_value
+            div_rate = div_yield if div_yield > 0 else 0.02
+
+            for year in range(1, years + 1):
+                annual_div = current_value * div_rate
+                total_dividends += annual_div
+                shares_from_drip = annual_div / price if price > 0 else 0
+                current_shares += shares_from_drip
+                current_value = current_shares * price * (1 + 0.03)  # Assume 3% price appreciation
+
+                annual_projections.append({
+                    "year": year,
+                    "total_shares": round(current_shares, 2),
+                    "total_value": round(current_value, 2),
+                    "annual_dividend": round(annual_div, 2),
+                    "total_dividends_received": round(total_dividends, 2),
+                    "yield_on_cost": round(div_rate * 100, 2),
+                })
+
+            return {
+                "symbol": symbol,
+                "dividend_yield": round(div_yield * 100, 2) if div_yield else round(div_rate * 100, 2),
+                "initial_value": round(initial_value, 2),
+                "final_value": round(current_value, 2),
+                "total_dividends": round(total_dividends, 2),
+                "total_return_pct": round((current_value - initial_value) / initial_value * 100, 2) if initial_value > 0 else 0,
+                "annual_projections": annual_projections,
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    # ==========================================
+    # Performance Calculation
+    # ==========================================
+
+    def calculate_performance(self) -> Dict:
+        """Calculate comprehensive performance metrics including diamond-standard metrics."""
+        try:
+            if not self.trade_log and not self.equity_snapshots:
+                return {
+                    "total_return_pct": 0, "win_rate": 0, "sharpe_ratio": 0,
+                    "sortino_ratio": 0, "calmar_ratio": 0, "omega_ratio": 0,
+                    "max_drawdown_pct": 0, "best_day_pct": 0, "worst_day_pct": 0,
+                    "total_trades": 0, "by_bucket": {},
+                }
+
+            # Calculate basic metrics from trade log
+            sell_trades = [t for t in self.trade_log if t.get("side") == "sell"]
+            total_trades = len(sell_trades)
+            winning_trades = len([t for t in sell_trades if t.get("pl", 0) > 0])
+            losing_trades = len([t for t in sell_trades if t.get("pl", 0) < 0])
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+
+            # Account-based return
+            account = self.get_account_info()
+            if "error" not in account:
+                current_equity = account.get("equity", 0)
+            else:
+                current_equity = self.buckets.get("original_capital", 100000)
+
+            original_capital = self.buckets.get("original_capital", current_equity)
+            total_return_pct = ((current_equity - original_capital) / original_capital * 100) if original_capital > 0 else 0
+
+            # Daily returns for risk metrics
+            daily_returns = []
+            if self.equity_snapshots and len(self.equity_snapshots) > 1:
+                for i in range(1, len(self.equity_snapshots)):
+                    prev_val = self.equity_snapshots[i-1].get("portfolio_value", 0)
+                    curr_val = self.equity_snapshots[i].get("portfolio_value", 0)
+                    if prev_val > 0 and curr_val > 0:
+                        daily_returns.append((curr_val - prev_val) / prev_val)
+
+            # Calculate risk metrics
+            sharpe_ratio = 0.0
+            sortino_ratio = 0.0
+            max_drawdown_pct = 0.0
+            best_day_pct = 0.0
+            worst_day_pct = 0.0
+            calmar_ratio = 0.0
+            omega_ratio = 0.0
+
+            if daily_returns:
+                returns_arr = np.array(daily_returns)
+                avg_return = np.mean(returns_arr)
+                std_return = np.std(returns_arr)
+
+                if std_return > 0:
+                    sharpe_ratio = float((avg_return / std_return) * sqrt(252))
+
+                # Sortino
+                downside_returns = returns_arr[returns_arr < 0]
+                downside_std = np.std(downside_returns) if len(downside_returns) > 0 else std_return
+                if downside_std > 0:
+                    sortino_ratio = float((avg_return / downside_std) * sqrt(252))
+
+                # Max drawdown
+                cumulative = np.cumprod(1 + returns_arr)
+                peak = np.maximum.accumulate(cumulative)
+                drawdown = (cumulative - peak) / peak
+                max_drawdown_pct = float(abs(np.min(drawdown)) * 100) if len(drawdown) > 0 else 0
+
+                # Best/worst day
+                best_day_pct = float(np.max(returns_arr) * 100) if len(returns_arr) > 0 else 0
+                worst_day_pct = float(np.min(returns_arr) * 100) if len(returns_arr) > 0 else 0
+
+                # Calmar
+                annual_return = avg_return * 252
+                calmar_ratio = float(annual_return / (max_drawdown_pct / 100)) if max_drawdown_pct > 0 else 0
+
+                # Omega
+                threshold = 0
+                gains = returns_arr[returns_arr > threshold]
+                losses = np.abs(returns_arr[returns_arr < threshold])
+                if len(losses) > 0 and np.sum(losses) > 0:
+                    omega_ratio = float(np.sum(gains) / np.sum(losses))
+                elif len(gains) > 0:
+                    omega_ratio = float('inf')
+
+            # Per-bucket metrics
+            by_bucket = {}
+            for bucket_name in ["dividend", "growth", "penny"]:
+                bucket_trades = [t for t in sell_trades if t.get("bucket", "growth") == bucket_name]
+                bucket_wins = len([t for t in bucket_trades if t.get("pl", 0) > 0])
+                bucket_total = len(bucket_trades)
+                bucket_pl = sum(t.get("pl", 0) for t in bucket_trades)
+                bucket_return_pct = sum(t.get("pl_pct", 0) for t in bucket_trades)
+
+                by_bucket[bucket_name] = {
+                    "trades": bucket_total,
+                    "wins": bucket_wins,
+                    "losses": bucket_total - bucket_wins,
+                    "win_rate": (bucket_wins / bucket_total * 100) if bucket_total > 0 else 0,
+                    "return_pct": round(bucket_return_pct, 2),
+                    "total_pl": round(bucket_pl, 2),
+                }
+
+            # Use advanced metrics if available
+            if ADVANCED_METRICS_AVAILABLE and len(daily_returns) > 5:
+                try:
+                    advanced = generate_full_report(daily_returns, self.trade_log)
+                    if isinstance(advanced, dict):
+                        sortino_ratio = advanced.get("sortino_ratio", sortino_ratio)
+                        calmar_ratio = advanced.get("calmar_ratio", calmar_ratio)
+                        omega_ratio = advanced.get("omega_ratio", omega_ratio)
+                except Exception:
+                    pass
+
+            return {
+                "total_return_pct": round(total_return_pct, 2),
+                "win_rate": round(win_rate, 1),
+                "sharpe_ratio": round(sharpe_ratio, 3),
+                "sortino_ratio": round(sortino_ratio, 3),
+                "calmar_ratio": round(calmar_ratio, 3),
+                "omega_ratio": round(omega_ratio, 3),
+                "max_drawdown_pct": round(max_drawdown_pct, 2),
+                "best_day_pct": round(best_day_pct, 2),
+                "worst_day_pct": round(worst_day_pct, 2),
+                "total_trades": total_trades,
+                "winning_trades": winning_trades,
+                "losing_trades": losing_trades,
+                "by_bucket": by_bucket,
+                "current_equity": current_equity,
+                "original_capital": original_capital,
+                "total_profit": current_equity - original_capital,
+            }
+
+        except Exception as e:
+            return {
+                "total_return_pct": 0, "win_rate": 0, "sharpe_ratio": 0,
+                "sortino_ratio": 0, "calmar_ratio": 0, "omega_ratio": 0,
+                "max_drawdown_pct": 0, "best_day_pct": 0, "worst_day_pct": 0,
+                "total_trades": 0, "by_bucket": {}, "error": str(e),
+            }
+
+    # ==========================================
+    # Equity Snapshots
+    # ==========================================
+
+    def record_equity_snapshot(self):
+        """Record current equity and bucket values as a snapshot."""
+        try:
+            account = self.get_account_info()
+            if "error" in account:
+                return
+
+            equity = account.get("equity", 0)
+            cash = account.get("cash", 0)
+
+            # Get SPY return for comparison
+            spy_return_pct = 0.0
+            spy_price = 0.0
             try:
-                self._check_and_reset_daily()
-                if not self.connected:
-                    self._log_error("Connection lost, reconnecting...")
-                    if not self._reconnect():
-                        self._log_error("Reconnect failed, will retry next cycle")
-                if self.connected:
-                    market = self.is_market_open()
-                    if market.get("is_open", True):
-                        self.run_cycle()
-                    else:
-                        self.status_message = f"Market closed. Next: {market.get('next_open', '?')}. Waiting..."
-                else:
-                    self.status_message = f"Disconnected. Failures: {self.consecutive_failures}"
-            except Exception as e:
-                self._log_error(f"Cycle error: {e}")
-                self.consecutive_failures += 1
-                if self.consecutive_failures >= 10:
-                    self._log_error(f"Too many failures ({self.consecutive_failures}). Pausing 5 min.")
-                    self._stop_event.wait(300)
-                    self.consecutive_failures = 0
-            interval = self.settings.get("scan_interval_min", 5) * 60
-            self._stop_event.wait(interval)
-        self.running = False
+                if YF_AVAILABLE:
+                    spy_data = yf.Ticker("SPY").history(period="1d")
+                    if not spy_data.empty:
+                        spy_open = float(spy_data['Open'].iloc[-1])
+                        spy_close = float(spy_data['Close'].iloc[-1])
+                        spy_return_pct = ((spy_close - spy_open) / spy_open * 100) if spy_open > 0 else 0
+                        spy_price = spy_close
+            except Exception:
+                pass
+
+            original_capital = self.buckets.get("original_capital", equity)
+            portfolio_return_pct = ((equity - original_capital) / original_capital * 100) if original_capital > 0 else 0
+
+            positions = self.get_positions()
+            div_value = sum(p.get("market_value", 0) for p in positions if p.get("bucket") in ["dividend", "long_term"])
+            gro_value = sum(p.get("market_value", 0) for p in positions if p.get("bucket") == "growth")
+            pen_value = sum(p.get("market_value", 0) for p in positions if p.get("bucket") == "penny")
+
+            # Calculate total dividends and profits for the day
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today_trades = [t for t in self.trade_log if t.get("timestamp", "")[:10] == today]
+            today_profit = sum(t.get("pl", 0) for t in today_trades if t.get("side") == "sell")
+            today_dividends = sum(t.get("pl", 0) for t in today_trades if t.get("side") == "dividend")
+
+            snapshot = {
+                "date": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "portfolio_value": equity,
+                "portfolio_return_pct": round(portfolio_return_pct, 2),
+                "spy_return_pct": round(spy_return_pct, 2),
+                "spy_price": spy_price,
+                "dividend_value": div_value,
+                "growth_value": gro_value,
+                "penny_value": pen_value,
+                "withdrawal_available": self.buckets["withdrawal"].get("available", 0),
+                "withdrawal_value": self.buckets["withdrawal"].get("available", 0),
+                "total_profit": equity - original_capital,
+                "cash": cash,
+                "positions_count": len(positions),
+                "today_profit": round(today_profit, 2),
+                "today_dividends": round(today_dividends, 2),
+            }
+
+            # Avoid duplicate snapshots on same date (but allow multiple per day for manual snapshots)
+            existing_dates = [s.get("date", "")[:10] for s in self.equity_snapshots[-5:]]
+            # Only skip if we already have a snapshot from the same hour
+            current_hour = datetime.utcnow().strftime("%Y-%m-%d %H")
+            recent_hours = [s.get("date", "")[:13] for s in self.equity_snapshots[-5:]]
+            if current_hour not in recent_hours:
+                self.equity_snapshots.append(snapshot)
+
+            # Keep snapshots manageable (max 365 days)
+            if len(self.equity_snapshots) > 3650:
+                self.equity_snapshots = self.equity_snapshots[-3650:]
+
+            self._save_trade_log()
+
+        except Exception as e:
+            print(f"Error recording snapshot: {e}")
 
     # ==========================================
-    # LOGGING & STATUS
+    # Export & CSV
     # ==========================================
 
-    def _log_error(self, message: str):
-        if not hasattr(self, 'errors'):
-            self.errors = []
-        entry = {"timestamp": datetime.now().isoformat(), "message": message}
-        self.errors.append(entry)
-        if len(self.errors) > 100: self.errors = self.errors[-50:]
+    def export_to_csv(self):
+        """Export trade log, equity snapshots, and bucket data to CSV files."""
+        try:
+            export_dir = Path.home() / ".cascadetrade" / "exports"
+            export_dir.mkdir(parents=True, exist_ok=True)
+            today_str = datetime.now().strftime("%Y-%m-%d")
+
+            # Export trade log
+            if self.trade_log:
+                trade_file = export_dir / f"trades_{today_str}.csv"
+                with open(trade_file, "w", newline="", encoding="utf-8") as f:
+                    if self.trade_log:
+                        all_keys = set()
+                        for t in self.trade_log:
+                            all_keys.update(t.keys())
+                        fieldnames = sorted(all_keys)
+                        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                        writer.writeheader()
+                        writer.writerows(self.trade_log)
+
+            # Export equity snapshots
+            if self.equity_snapshots:
+                snap_file = export_dir / f"equity_{today_str}.csv"
+                with open(snap_file, "w", newline="", encoding="utf-8") as f:
+                    if self.equity_snapshots:
+                        all_keys = set()
+                        for s in self.equity_snapshots:
+                            all_keys.update(s.keys())
+                        fieldnames = sorted(all_keys)
+                        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+                        writer.writeheader()
+                        writer.writerows(self.equity_snapshots)
+
+            # Export bucket summary
+            bucket_file = export_dir / f"buckets_{today_str}.csv"
+            with open(bucket_file, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Bucket", "Key", "Value"])
+                for bucket_name in ["dividend", "growth", "penny", "withdrawal"]:
+                    for key, value in self.buckets.get(bucket_name, {}).items():
+                        writer.writerow([bucket_name, key, value])
+
+            return True
+
+        except Exception as e:
+            print(f"Error exporting to CSV: {e}")
+            return False
+
+    # ==========================================
+    # Status & Alerts
+    # ==========================================
 
     def get_status(self) -> Dict:
-        return {
-            "connected": self.connected, "running": self.running,
-            "status_message": self.status_message,
-            "cycle_count": self.cycle_count, "last_scan": self.last_scan_time,
-            "last_successful_cycle": self.last_successful_cycle,
-            "daily_pnl": round(self.daily_pnl, 2),
-            "signals_count": len(self.signals_found),
-            "trades_count": len(self.trade_log),
-            "errors_count": len(self.errors),
-            "consecutive_failures": self.consecutive_failures,
-            "reconnect_count": self.reconnect_count,
-            "last_reconnect_time": self.last_reconnect_time,
-            "settings": dict(self.settings),
-            "scan_summary": dict(self.scan_summary),
-            "advanced_signals_available": ADVANCED_SIGNALS_AVAILABLE,
-            "backtest_available": BACKTEST_AVAILABLE,
-            "dividend_calendar_available": DIVIDEND_CALENDAR_AVAILABLE,
-            "audit_available": AUDIT_AVAILABLE,
-            "encryption_available": ENCRYPTION_AVAILABLE,
-            "encryption_ready": ENCRYPTION_READY,
-            "terms_accepted": self.terms_accepted
-        }
+        """Return the current status of the engine. All properties at correct indent level."""
+        try:
+            account = self.get_account_info()
+            if "error" not in account:
+                portfolio_value = account.get("portfolio_value", 0)
+                equity = account.get("equity", 0)
+                cash = account.get("cash", 0)
+                buying_power = account.get("buying_power", 0)
+            else:
+                portfolio_value = 0
+                equity = 0
+                cash = 0
+                buying_power = 0
+
+            positions = self.get_positions() if self.connected else []
+            signals_buy = sum(1 for s in self.signals_found if s.get("signal") == "BUY")
+            signals_sell = sum(1 for s in self.signals_found if s.get("signal") == "SELL")
+
+            return {
+                "connected": self.connected,
+                "running": self.running,
+                "status_message": self.status_message,
+                "cycle_count": self.cycle_count,
+                "daily_pnl": self.daily_pnl,
+                "portfolio_value": portfolio_value,
+                "equity": equity,
+                "cash": cash,
+                "buying_power": buying_power,
+                "num_positions": len(positions),
+                "num_signals": len(self.signals_found),
+                "num_buy_signals": signals_buy,
+                "num_sell_signals": signals_sell,
+                "num_trades": len(self.trade_log),
+                "username": self.username,
+                "last_scan": self.signals_found[0].get("symbol", "N/A") if self.signals_found else "N/A",
+                "watchlist_size": len(self.settings.get("watchlist", [])),
+                "vix_filter": self.settings.get("use_vix_filter", True),
+                "advanced_signals": self.settings.get("use_advanced_signals", True),
+                "atr_sizing": self.settings.get("use_atr_position_sizing", True),
+                "profit_skim_pct": self.settings.get("profit_skim_pct", 1.0),
+                "auto_extract": self.settings.get("auto_extract_profits", True),
+            }
+        except Exception as e:
+            return {
+                "connected": self.connected,
+                "running": self.running,
+                "status_message": f"Status error: {e}",
+                "cycle_count": self.cycle_count,
+                "daily_pnl": self.daily_pnl,
+                "portfolio_value": 0,
+                "equity": 0,
+                "cash": 0,
+                "buying_power": 0,
+                "num_positions": 0,
+                "num_signals": 0,
+                "num_buy_signals": 0,
+                "num_sell_signals": 0,
+                "num_trades": len(self.trade_log),
+                "username": self.username,
+                "last_scan": "N/A",
+                "watchlist_size": len(self.settings.get("watchlist", [])),
+                "vix_filter": self.settings.get("use_vix_filter", True),
+                "advanced_signals": self.settings.get("use_advanced_signals", True),
+                "atr_sizing": self.settings.get("use_atr_position_sizing", True),
+                "profit_skim_pct": self.settings.get("profit_skim_pct", 1.0),
+                "auto_extract": self.settings.get("auto_extract_profits", True),
+            }
+
+    def send_alert(self, message: str):
+        """Send a Discord alert with privacy mode support."""
+        try:
+            if ALERTS_AVAILABLE:
+                webhook_url = ""
+                if DB_AVAILABLE and self.username:
+                    try:
+                        db = SessionLocal()
+                        user = db.query(User).filter(User.username == self.username).first()
+                        if user:
+                            webhook_url = getattr(user, 'discord_webhook_url', '') or ''
+                        db.close()
+                    except Exception:
+                        pass
+
+                if webhook_url:
+                    if self.settings.get("discord_privacy_mode", True):
+                        # Strip dollar amounts for privacy
+                        message = re.sub(r'\$[\d,]+\.?\d*', '$XX.XX', message)
+                    send_discord_alert(webhook_url, message)
+        except Exception:
+            pass
+
     # ==========================================
-    # IPO & NEW LISTINGS DETECTION
+    # Auto Watchlist Builder
+    # ==========================================
+
+    def auto_build_watchlist(self, top_n: int = 100, min_price: float = 5.0,
+                             max_price: float = 500.0) -> List[str]:
+        """Build an automatic watchlist from the Alpaca universe based on volume and price."""
+        try:
+            if not self.connected or not self.api:
+                return self.settings.get("watchlist", [])
+
+            # Get all tradable assets from Alpaca
+            try:
+                assets = self.api.list_assets(status="active")
+            except Exception:
+                assets = []
+
+            tradable = [a for a in assets if getattr(a, 'tradable', False)]
+            symbols = []
+            for asset in tradable:
+                sym = getattr(asset, 'symbol', '')
+                if not sym or len(sym) > 5:
+                    continue
+                if getattr(asset, 'exchange', '') not in ["NASDAQ", "NYSE", "ARCA", "AMEX", "BATS"]:
+                    continue
+                symbols.append(sym)
+
+            if not symbols:
+                return self.settings.get("watchlist", [])
+
+            # Fetch price and volume data
+            batch_data = {}
+            chunk_size = 50
+            for i in range(0, min(len(symbols), top_n * 5), chunk_size):
+                chunk = symbols[i:i + chunk_size]
+                try:
+                    if YF_AVAILABLE:
+                        ticker_str = " ".join(chunk)
+                        df = yf.download(ticker_str, period="5d", group_by="ticker",
+                                        threads=True, progress=False)
+                        for sym in chunk:
+                            try:
+                                if isinstance(df.columns, pd.MultiIndex):
+                                    sym_df = df[sym].copy()
+                                else:
+                                    sym_df = df.copy()
+                                if not sym_df.empty:
+                                    price = float(sym_df['Close'].iloc[-1])
+                                    volume = float(sym_df['Volume'].mean())
+                                    if min_price <= price <= max_price:
+                                        batch_data[sym] = {"price": price, "volume": volume}
+                            except Exception:
+                                continue
+                except Exception:
+                    continue
+
+            # Sort by volume and take top N
+            sorted_symbols = sorted(
+                batch_data.keys(),
+                key=lambda s: batch_data[s].get("volume", 0),
+                reverse=True
+            )
+            new_watchlist = sorted_symbols[:top_n]
+
+            # Always include key dividend and growth stocks
+            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "JNJ", "KO", "PEP", "V"]
+            for sym in must_have:
+                if sym not in new_watchlist:
+                    new_watchlist.insert(0, sym)
+
+            if new_watchlist:
+                self.settings["watchlist"] = new_watchlist
+                self.save_settings()
+
+            self.send_alert(f"📋 Auto watchlist built: {len(new_watchlist)} stocks")
+            return new_watchlist
+
+        except Exception as e:
+            self.status_message = f"Auto watchlist error: {e}"
+            return self.settings.get("watchlist", [])
+
+    # ==========================================
+    # IPO & New Listings Scanner
     # ==========================================
 
     def scan_new_listings(self) -> Dict:
-        """Scan for newly tradable stocks on Alpaca and upcoming IPOs."""
-        if not IPO_SCANNER_AVAILABLE:
-            return {"status": "error", "message": "IPO Scanner module not available"}
-        if not self.api or not self.connected:
-            return {"status": "error", "message": "Not connected to Alpaca"}
-
-        results = {
-            "new_symbols": [],
-            "upcoming_ipos": [],
-            "alert_message": "",
-            "status": "success"
-        }
-
+        """Scan for new tradable symbols on Alpaca."""
         try:
-            # 1. Detect newly tradable symbols on Alpaca
-            new_symbols = ipo_scanner.scan_new_listings(self.api)
-            if new_symbols:
-                results["new_symbols"] = new_symbols
-                self._log_error(f"IPO Scanner: Found {len(new_symbols)} newly tradable stocks: {', '.join(new_symbols[:10])}")
+            if not self.connected or not self.api:
+                return {"status": "error", "message": "Not connected to Alpaca", "new_symbols": []}
 
-            # 2. Fetch upcoming IPOs from Finnhub (only once per day to save API calls)
-            today = datetime.now().date().isoformat()
-            if self.last_ipo_scan_date != today:
-                finnhub_key = self._get_finhub_key()
-                upcoming = ipo_scanner.get_upcoming_ipos(days_ahead=7, finnhub_api_key=finnhub_key)
-                if upcoming:
-                    results["upcoming_ipos"] = upcoming
-                    self.last_ipo_scan_date = today
-                    self._log_error(f"IPO Scanner: Found {len(upcoming)} upcoming IPOs")
+            if IPO_SCANNER_AVAILABLE:
+                known = load_known_symbols()
+                if not known:
+                    save_symbol_snapshot(self.api)
+                    known = load_known_symbols()
 
-            # 3. Format and send Discord alert if anything was found
-            if new_symbols or results["upcoming_ipos"]:
-                alert_msg = ipo_scanner.format_ipo_alert(new_symbols, results["upcoming_ipos"])
-                results["alert_message"] = alert_msg
-                self.send_alert(f"🔔 **New Listings Alert!**\n\n{alert_msg}")
+                assets = self.api.list_assets(status="active")
+                current_symbols = set(a.symbol for a in assets if getattr(a, 'tradable', False))
+
+                new_symbols = list(current_symbols - set(known))
+
+                if new_symbols:
+                    save_symbol_snapshot(self.api)
+                    self.known_symbols = list(current_symbols)
+
+                return {
+                    "status": "success",
+                    "new_symbols": new_symbols[:50],
+                    "total_current": len(current_symbols),
+                    "total_known": len(known),
+                }
+            else:
+                # Fallback without IPO scanner module
+                try:
+                    assets = self.api.list_assets(status="active")
+                    current_symbols = set(a.symbol for a in assets if getattr(a, 'tradable', False))
+                    if not self.known_symbols:
+                        self.known_symbols = list(current_symbols)
+                        return {
+                            "status": "success",
+                            "new_symbols": [],
+                            "total_current": len(current_symbols),
+                            "message": "Baseline saved. Run again to detect new listings.",
+                        }
+
+                    old_symbols = set(self.known_symbols)
+                    new_symbols = list(current_symbols - old_symbols)
+
+                    if new_symbols:
+                        self.known_symbols = list(current_symbols)
+
+                    return {
+                        "status": "success",
+                        "new_symbols": new_symbols[:50],
+                        "total_current": len(current_symbols),
+                    }
+                except Exception as e:
+                    return {"status": "error", "message": str(e), "new_symbols": []}
 
         except Exception as e:
-            results["status"] = "error"
-            results["message"] = str(e)
-            self._log_error(f"IPO Scanner error: {e}")
+            return {"status": "error", "message": str(e), "new_symbols": []}
 
-        return results
+    # ==========================================
+    # Backtesting
+    # ==========================================
 
-    def auto_add_new_to_watchlist(self, new_symbols: list) -> Dict:
-        """Optionally add newly detected symbols to the watchlist."""
-        if not new_symbols:
-            return {"status": "error", "message": "No symbols provided"}
+    def run_backtest(self, symbols: List[str], start_date: str, end_date: str,
+                     strategy: str = "combined") -> Dict:
+        """Run a backtest on the given symbols using the backtest engine."""
+        try:
+            if not BACKTEST_AVAILABLE:
+                # Fallback: simple internal backtest
+                return self._simple_backtest(symbols, start_date, end_date, strategy)
 
-        current_watchlist = self.settings.get("watchlist", [])
-        added = []
+            engine = BacktestEngine()
+            result = engine.run(
+                symbols=symbols,
+                start_date=start_date,
+                end_date=end_date,
+                strategy=strategy,
+                settings=self.settings,
+            )
+            return result
 
-        for symbol in new_symbols:
-            if symbol not in current_watchlist:
-                current_watchlist.append(symbol)
-                added.append(symbol)
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
-        if added:
-            self.settings["watchlist"] = current_watchlist
-            self.save_settings()
-            self._log_error(f"Auto-added {len(added)} new symbols to watchlist: {', '.join(added)}")
-            return {"status": "success", "added": added, "message": f"Added {len(added)} symbols to watchlist"}
-        
-        return {"status": "success", "added": [], "message": "No new symbols to add"}
+    def _simple_backtest(self, symbols: List[str], start_date: str, end_date: str,
+                         strategy: str = "combined") -> Dict:
+        """Simple internal backtest fallback when BacktestEngine is not available."""
+        try:
+            if not YF_AVAILABLE:
+                return {"status": "error", "message": "yfinance not available for backtesting"}
+
+            all_trades = []
+            equity_curve = []
+            capital = 100000
+            equity = capital
+
+            for symbol in symbols:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    df = ticker.history(start=start_date, end=end_date)
+                    if df.empty or len(df) < 50:
+                        continue
+
+                    df.columns = [c.lower() for c in df.columns]
+                    if 'adj_close' in df.columns:
+                        df = df.drop(columns=['adj_close'])
+
+                    # Calculate indicators
+                    rsi = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+                    df['rsi'] = rsi
+
+                    bucket = self.classify_stock(symbol)
+                    bucket_settings = self._get_bucket_settings(bucket)
+                    rsi_oversold = bucket_settings.get("rsi_oversold", 30)
+                    rsi_overbought = bucket_settings.get("rsi_overbought", 70)
+
+                    position = 0
+                    entry_price = 0
+                    entry_date = ""
+
+                    for i in range(50, len(df)):
+                        row = df.iloc[i]
+                        rsi_val = row.get('rsi', 50)
+
+                        if np.isnan(rsi_val):
+                            continue
+
+                        # Buy signal
+                        if position == 0 and rsi_val < rsi_oversold:
+                            entry_price = row['close']
+                            entry_date = row.name.strftime("%Y-%m-%d") if hasattr(row.name, 'strftime') else str(row.name)[:10]
+                            shares = int(capital * 0.08 / entry_price) if entry_price > 0 else 0
+                            position = shares
+                        # Sell signal
+                        elif position > 0 and rsi_val > rsi_overbought:
+                            exit_price = row['close']
+                            exit_date = row.name.strftime("%Y-%m-%d") if hasattr(row.name, 'strftime') else str(row.name)[:10]
+                            pnl = (exit_price - entry_price) * position
+                            pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0
+                            equity += pnl
+
+                            all_trades.append({
+                                "symbol": symbol,
+                                "bucket": bucket,
+                                "entry_date": entry_date,
+                                "exit_date": exit_date,
+                                "entry_price": round(entry_price, 2),
+                                "exit_price": round(exit_price, 2),
+                                "shares": position,
+                                "pnl": round(pnl, 2),
+                                "pnl_pct": round(pnl_pct * 100, 2),
+                                "reason": f"RSI {rsi_val:.0f}",
+                            })
+                            position = 0
+                            entry_price = 0
+
+                        # Equity curve point
+                        current_value = equity + (position * row['close'] if position > 0 else 0)
+                        equity_curve.append({
+                            "date": row.name.strftime("%Y-%m-%d") if hasattr(row.name, 'strftime') else str(row.name)[:10],
+                            "equity": round(current_value, 2),
+                            "cash": round(equity - (position * row['close'] if position > 0 else 0), 2),
+                            "positions_value": round(position * row['close'] if position > 0 else 0, 2),
+                        })
+
+                except Exception:
+                    continue
+
+            if not all_trades:
+                return {"status": "error", "message": "No trades generated during backtest period"}
+
+            # Calculate metrics
+            winning_trades = [t for t in all_trades if t.get("pnl", 0) > 0]
+            losing_trades = [t for t in all_trades if t.get("pnl", 0) < 0]
+            total_pnl = sum(t.get("pnl", 0) for t in all_trades)
+            win_rate = len(winning_trades) / len(all_trades) * 100 if all_trades else 0
+
+            # Bucket P&L
+            bucket_pnl = {}
+            for t in all_trades:
+                b = t.get("bucket", "growth")
+                bucket_pnl[b] = bucket_pnl.get(b, 0) + t.get("pnl", 0)
+
+            total_return_pct = ((equity - capital) / capital * 100) if capital > 0 else 0
+
+            # Max drawdown from equity curve
+            max_drawdown_pct = 0
+            if equity_curve:
+                values = [e["equity"] for e in equity_curve]
+                peak = values[0]
+                for v in values:
+                    if v > peak:
+                        peak = v
+                    dd = (peak - v) / peak * 100 if peak > 0 else 0
+                    if dd > max_drawdown_pct:
+                        max_drawdown_pct = dd
+
+            return {
+                "status": "complete",
+                "symbols_tested": len(symbols),
+                "trades": all_trades,
+                "metrics": {
+                    "total_return_pct": round(total_return_pct, 2),
+                    "win_rate": round(win_rate, 1),
+                    "max_drawdown_pct": round(max_drawdown_pct, 2),
+                    "profit_factor": round(abs(sum(t["pnl"] for t in winning_trades)) / abs(sum(t["pnl"] for t in losing_trades)), 2) if losing_trades and sum(t["pnl"] for t in losing_trades) != 0 else 0,
+                    "sharpe_ratio": 0,
+                    "sortino_ratio": 0,
+                    "calmar_ratio": 0,
+                    "omega_ratio": 0,
+                    "total_trades": len(all_trades),
+                    "winning_trades": len(winning_trades),
+                    "losing_trades": len(losing_trades),
+                },
+                "bucket_pnl": bucket_pnl,
+                "equity_curve": equity_curve,
+            }
+
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # ==========================================
+    # Trade Notes / Journal
+    # ==========================================
+
+    def save_trade_note(self, username: str, symbol: str, action: str,
+                        entry_reason: str = "", emotion: str = "",
+                        lesson_learned: str = "") -> bool:
+        """Save a trade journal entry."""
+        try:
+            if AUDIT_AVAILABLE:
+                from core.audit import save_journal_entry
+                save_journal_entry(username, symbol, action, entry_reason, emotion, lesson_learned)
+                return True
+            else:
+                self.trade_log.append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "symbol": symbol,
+                    "side": "journal",
+                    "action": action,
+                    "qty": 0,
+                    "price": 0,
+                    "bucket": self.classify_stock(symbol),
+                    "confidence": 0,
+                    "reason": entry_reason,
+                    "emotion": emotion,
+                    "lesson_learned": lesson_learned,
+                    "username": username,
+                })
+                self._save_trade_log()
+                return True
+        except Exception as e:
+            print(f"Error saving trade note: {e}")
+            return False
+
+    def _reconnect(self) -> bool:
+        """Attempt to reconnect to Alpaca with exponential backoff."""
+        if self.reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
+            self.status_message = f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. Stopping bot."
+            self.running = False
+            return False
+
+        delay = min(self.RECONNECT_BASE_DELAY * (2 ** self.reconnect_count), self.MAX_RECONNECT_DELAY)
+        self.reconnect_count += 1
+        self.status_message = f"Reconnecting... attempt {self.reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS} (wait {delay}s)"
+
+        import time as _time
+        _time.sleep(delay)
+
+        try:
+            if self._alpaca_api_ref:
+                account = self._alpaca_api_ref.get_account()
+                if account:
+                    self.connected = True
+                    self.reconnect_count = 0
+                    self.consecutive_failures = 0
+                    self.status_message = "Reconnected successfully."
+                    return True
+        except Exception as e:
+            self.consecutive_failures += 1
+            self.last_reconnect_time = datetime.utcnow().isoformat()
+
+        return False
+
+    def _check_and_reset_daily(self):
+        """Reset daily counters if a new trading day has started."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        if self.daily_reset_date != today:
+            self.daily_pnl = 0.0
+            self.daily_reset_date = today
+            account = self.get_account_info()
+            if "error" not in account:
+                self._daily_start_equity = account.get("equity", 0)
+                self._portfolio_start_value = account.get("equity", 0)
+
+    def _log_error(self, error_type: str, error_msg: str, symbol: str = ""):
+        """Log an error with context."""
+        import traceback
+        tb = traceback.format_exc()
+        error_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "type": error_type,
+            "message": str(error_msg),
+            "symbol": symbol,
+            "traceback": tb,
+        }
+        print(f"[{error_type}] {symbol}: {error_msg}")
+        if AUDIT_AVAILABLE and self.username:
+            try:
+                log_audit(self.username, f"error_{error_type}", f"{symbol}: {error_msg}")
+            except Exception:
+                pass
+
+    def get_open_orders(self) -> List[Dict]:
+        """Get all open orders from Alpaca."""
+        try:
+            if not self.connected or not self.api:
+                return []
+            orders = self.api.list_orders(status="open")
+            result = []
+            for o in orders:
+                result.append({
+                    "id": getattr(o, 'id', ''),
+                    "symbol": getattr(o, 'symbol', ''),
+                    "qty": float(getattr(o, 'qty', 0)),
+                    "side": getattr(o, 'side', ''),
+                    "type": getattr(o, 'type', ''),
+                    "limit_price": float(getattr(o, 'limit_price', 0) or 0),
+                    "stop_price": float(getattr(o, 'stop_price', 0) or 0),
+                    "time_in_force": getattr(o, 'time_in_force', ''),
+                    "submitted_at": str(getattr(o, 'submitted_at', '')),
+                    "status": getattr(o, 'status', ''),
+                })
+            return result
+        except Exception:
+            return []
+
+    def scan_advanced(self) -> List[Dict]:
+        """Scan using advanced signals if available, otherwise falls back to basic scan."""
+        self.signals_found = []
+        self.near_signals = []
+
+        if not self.connected or not self.api:
+            self.status_message = "Not connected — cannot scan"
+            return self.signals_found
+
+        if self.settings.get("use_vix_filter", True):
+            vix_result = self.check_vix()
+            if not vix_result.get("safe_to_trade", True):
+                self.status_message = vix_result.get("reason", "VIX filter active")
+                return self.signals_found
+
+        watchlist = self.settings.get("watchlist", [])
+        if not watchlist:
+            self.status_message = "No watchlist configured"
+            return self.signals_found
+
+        if ADVANCED_SIGNALS_AVAILABLE and self.settings.get("use_advanced_signals", True):
+            try:
+                for symbol in watchlist:
+                    try:
+                        signal_result = generate_all_signals(symbol)
+                        if signal_result and isinstance(signal_result, dict):
+                            combined_score = calculate_combined_score(signal_result)
+                            bucket = self.classify_stock(symbol)
+                            bucket_settings = self._get_bucket_settings(bucket)
+                            min_confidence = bucket_settings.get("min_confidence",
+                                            self.settings.get("min_confidence", 0.25))
+
+                            if combined_score >= min_confidence:
+                                signal_direction = "BUY"
+                                for indicator, data in signal_result.items():
+                                    if isinstance(data, dict) and data.get("signal") == "SELL":
+                                        signal_direction = "SELL"
+                                        break
+
+                                price = self._get_current_price(symbol)
+                                self.signals_found.append({
+                                    "symbol": symbol,
+                                    "signal": signal_direction,
+                                    "price": price,
+                                    "confidence": combined_score,
+                                    "bucket": bucket,
+                                    "reason": f"Advanced signals combined score: {combined_score:.0%}",
+                                    "indicators": signal_result,
+                                })
+                            elif combined_score >= min_confidence * 0.7:
+                                price = self._get_current_price(symbol)
+                                self.near_signals.append({
+                                    "symbol": symbol,
+                                    "signal": "NEAR",
+                                    "price": price,
+                                    "confidence": combined_score,
+                                    "bucket": bucket,
+                                    "reason": f"Near signal ({combined_score:.0%})",
+                                })
+                    except Exception:
+                        continue
+
+                self.status_message = f"Advanced scan: {len(self.signals_found)} signals, {len(self.near_signals)} near-signals"
+                return self.signals_found
+            except Exception:
+                pass
+
+        # Fallback to basic scan
+        self.scan_all()
+        return self.signals_found
+
+    def record_signal(self, signal_data: Dict):
+        """Record a signal in the signal history."""
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "symbol": signal_data.get("symbol", ""),
+            "signal": signal_data.get("signal", ""),
+            "confidence": signal_data.get("confidence", 0),
+            "bucket": signal_data.get("bucket", ""),
+            "price": signal_data.get("price", 0),
+            "reason": signal_data.get("reason", ""),
+        }
+        self.signal_history.append(entry)
+        # Keep last 500 signals
+        if len(self.signal_history) > 500:
+            self.signal_history = self.signal_history[-500:]
+
+    def _get_tier(self) -> str:
+        """Get the user's subscription tier."""
+        try:
+            if DB_AVAILABLE and self.username:
+                db = SessionLocal()
+                user = db.query(User).filter(User.username == self.username).first()
+                db.close()
+                if user and hasattr(user, 'tier'):
+                    return user.tier or "starter"
+            return "starter"
+        except Exception:
+            return "starter"
+
+    def get_available_trading_cash(self, bucket: str = None) -> float:
+        """Calculate available trading cash for a specific bucket or total."""
+        try:
+            account = self.get_account_info()
+            if "error" in account:
+                return 0.0
+
+            total_equity = account.get("equity", 0)
+            cash = account.get("cash", 0)
+
+            if bucket:
+                bucket_pct = self.settings.get(f"{bucket}_pct", 0)
+                return cash * bucket_pct
+            else:
+                return cash
+        except Exception:
+            return 0.0
+
+    def move_profits(self, from_bucket: str, to_bucket: str, amount: float) -> Dict:
+        """Move profits from one bucket to another."""
+        try:
+            if from_bucket not in self.buckets or to_bucket not in self.buckets:
+                return {"status": "error", "message": f"Invalid bucket: {from_bucket} or {to_bucket}"}
+
+            if from_bucket == "withdrawal":
+                return self.move_from_withdrawal(amount, to_bucket)
+
+            available_profit = self.buckets[from_bucket].get("value", 0) - self.buckets[from_bucket].get("total_deposited", 0)
+            if amount <= 0:
+                return {"status": "error", "message": "Amount must be positive."}
+            if amount > available_profit:
+                return {"status": "error", "message": f"Amount ${amount:,.2f} exceeds available profit ${available_profit:,.2f} in {from_bucket.title()}."}
+
+            self.buckets[from_bucket]["total_withdrawn"] = self.buckets[from_bucket].get("total_withdrawn", 0) + amount
+            self.buckets[to_bucket]["profits_moved_in"] = self.buckets[to_bucket].get("profits_moved_in", 0) + amount
+            self._save_trade_log()
+
+            from_icon = BUCKET_ICONS.get(from_bucket, "⚪")
+            to_icon = BUCKET_ICONS.get(to_bucket, "⚪")
+            self.send_alert(
+                f"📊 Moved ${amount:,.2f} from {from_icon} {from_bucket.title()} to {to_icon} {to_bucket.title()}."
+            )
+
+            return {
+                "status": "success",
+                "message": f"Moved ${amount:,.2f} from {from_bucket.title()} to {to_bucket.title()}.",
+                "amount": amount,
+                "from_bucket": from_bucket,
+                "to_bucket": to_bucket,
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def _calculate_bucket_profits(self) -> Dict:
+        """Calculate profits for each bucket based on positions."""
+        try:
+            positions = self.get_positions()
+            result = {}
+            for bucket_name in ["dividend", "growth", "penny"]:
+                bucket_positions = [p for p in positions if p.get("bucket") == bucket_name or
+                                   (bucket_name == "dividend" and p.get("bucket") == "long_term")]
+                total_value = sum(p.get("market_value", 0) for p in bucket_positions)
+                total_cost = sum(p.get("avg_entry_price", 0) * p.get("qty", 0) for p in bucket_positions)
+                total_pl = sum(p.get("unrealized_pl", 0) for p in bucket_positions)
+                result[bucket_name] = {
+                    "positions": len(bucket_positions),
+                    "total_value": total_value,
+                    "total_cost": total_cost,
+                    "total_pl": total_pl,
+                    "total_pl_pct": (total_pl / total_cost * 100) if total_cost > 0 else 0,
+                    "deposited": self.buckets[bucket_name].get("total_deposited", 0),
+                    "profit_vs_deposited": ((total_value - self.buckets[bucket_name].get("total_deposited", 0))
+                                           / self.buckets[bucket_name].get("total_deposited", 1) * 100)
+                                           if self.buckets[bucket_name].get("total_deposited", 0) > 0 else 0,
+                }
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _apply_profit_skimming(self, symbol: str, pl: float, pl_pct: float, bucket: str):
+        """Apply profit skimming rules when a position is closed with profit."""
+        try:
+            skim_pct = self.settings.get("profit_skim_pct", 1.0)
+            if pl > 0 and skim_pct > 0:
+                profit_to_withdraw = pl * skim_pct
+                self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + profit_to_withdraw
+                self.buckets["withdrawal"]["profits_extracted"] = self.buckets["withdrawal"].get("profits_extracted", 0) + profit_to_withdraw
+
+                # Remaining profit goes back to the bucket
+                remaining_profit = pl * (1 - skim_pct)
+                if bucket in self.buckets:
+                    self.buckets[bucket]["profits_moved_in"] = self.buckets[bucket].get("profits_moved_in", 0) + remaining_profit
+
+                # Record in extraction history
+                self.buckets["withdrawal"]["extraction_history"].append({
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "symbol": symbol,
+                    "total_profit": pl,
+                    "skimmed": profit_to_withdraw,
+                    "reinvested": remaining_profit,
+                    "skim_pct": skim_pct,
+                })
+        except Exception as e:
+            self._log_error("profit_skimming", str(e), symbol)
+
+    def connect_encrypted(self, api_key: str, secret_key: str, base_url: str = None) -> bool:
+        """Connect to Alpaca using encrypted API keys."""
+        try:
+            if ENCRYPTION_AVAILABLE:
+                try:
+                    api_key = decrypt_value(api_key) if is_encrypted(api_key) else api_key
+                    secret_key = decrypt_value(secret_key) if is_encrypted(secret_key) else secret_key
+                except Exception:
+                    pass
+
+            if base_url is None:
+                base_url = 'https://paper-api.alpaca.markets'
+
+            if not ALPACA_AVAILABLE or tradeapi is None:
+                self.status_message = "alpaca_trade_api not installed"
+                return False
+
+            api = tradeapi.REST(api_key, secret_key, base_url=base_url, api_version='v2')
+            return self.connect(api)
+        except Exception as e:
+            self.status_message = f"Encrypted connection error: {str(e)}"
+            return False
+
+    def deposit_money(self, amount: float, bucket: str) -> Dict:
+        """Record a manual deposit into a specific bucket."""
+        try:
+            if bucket not in ["dividend", "growth", "penny", "withdrawal"]:
+                return {"status": "error", "message": f"Invalid bucket: {bucket}"}
+            if amount <= 0:
+                return {"status": "error", "message": "Amount must be positive."}
+
+            self.buckets[bucket]["total_deposited"] = self.buckets[bucket].get("total_deposited", 0) + amount
+            self.buckets[bucket]["deposit_history"].append({
+                "timestamp": datetime.utcnow().isoformat(),
+                "amount": amount,
+                "type": "deposit",
+            })
+
+            if self.buckets.get("original_capital", 0) == 0:
+                account = self.get_account_info()
+                if "error" not in account:
+                    self.buckets["original_capital"] = account.get("equity", 0)
+
+            self._save_trade_log()
+
+            bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
+            self.send_alert(f"💰 Deposited ${amount:,.2f} into {bucket_icon} {bucket.title()} Pot.")
+
+            return {
+                "status": "success",
+                "message": f"Deposited ${amount:,.2f} into {bucket.title()} Pot.",
+                "amount": amount,
+                "bucket": bucket,
+                "bucket_total_deposited": self.buckets[bucket]["total_deposited"],
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def invalidate_bucket_cache(self):
+        """Invalidate the position cache so next call fetches fresh data."""
+        self._position_cache = {}
+        self._position_cache_time = 0
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._sector_cache = {}
+
+    def auto_add_new_to_watchlist(self, new_symbols: List[str]) -> Dict:
+        """Automatically add newly discovered symbols to the watchlist."""
+        try:
+            if not new_symbols:
+                return {"status": "success", "message": "No new symbols to add.", "added": 0}
+
+            watchlist = self.settings.get("watchlist", [])
+            added = 0
+            for symbol in new_symbols:
+                symbol = symbol.upper().strip()
+                if symbol and symbol not in watchlist:
+                    # Quick check it's a real stock
+                    bucket = self.classify_stock(symbol)
+                    watchlist.append(symbol)
+                    added += 1
+
+            if added > 0:
+                self.settings["watchlist"] = watchlist
+                self.save_settings()
+                self.send_alert(f"📋 Auto-added {added} new symbols to watchlist: {', '.join(new_symbols[:10])}")
+
+            return {
+                "status": "success",
+                "message": f"Added {added} new symbols to watchlist.",
+                "added": added,
+                "total_watchlist": len(watchlist),
+            }
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
