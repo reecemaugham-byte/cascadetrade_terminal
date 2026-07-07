@@ -165,8 +165,15 @@ from core.database import (
 
 from core.terms import TERMS_OF_SERVICE, RISK_DISCLAIMER, PRIVACY_POLICY
 
+from utils import (
+    safe_encrypt, safe_decrypt, watermark_csv, format_currency,
+    format_percent, format_timestamp, bucket_icon, bucket_display_name,
+    is_market_open as check_market_open, send_discord_message, send_discord_file,
+    SECTOR_MAP
+)
+
 # ==========================================
-# DATABASE MIGRATION (Added Finnhub Key)
+# DATABASE MIGRATION
 # ==========================================
 def ensure_db_columns():
     from sqlalchemy import text, inspect as sa_inspect
@@ -196,7 +203,6 @@ def ensure_db_columns():
                 try:
                     db.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}"))
                 except Exception:
-                    # ignore individual column add failures
                     pass
     except Exception as e:
         print(f"DB migration note: {e}")
@@ -206,13 +212,8 @@ def ensure_db_columns():
 ensure_db_columns()
 
 # ==========================================
-# CSV WATERMARK HELPER
+# AI ASSISTANT FUNCTION
 # ==========================================
-def watermark_csv(csv_string: str) -> str:
-    watermark = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
-    return csv_string + watermark
-
-# === CHANGE 2: AI Assistant function ===
 def get_ai_response(user_message, system_prompt, api_key):
     """Call OpenAI API and return the response for the AI Assistant."""
     try:
@@ -233,12 +234,10 @@ def get_ai_response(user_message, system_prompt, api_key):
         return response.choices[0].message.content
     except Exception as e:
         return f"Error: {str(e)}"
-# === END CHANGE 2 ===
 
 # ==========================================
 # 1. PAGE CONFIG & STYLING
 # ==========================================
-
 st.set_page_config(page_title="CascadeTrade Terminal", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 hide_st_style = """
 <style>
@@ -280,13 +279,11 @@ if "new_symbols_found" not in st.session_state:
 if "upcoming_ipos_found" not in st.session_state:
     st.session_state.upcoming_ipos_found = []
 
-# === CHANGE 2: Initialize chat history for AI Assistant ===
 if "messages" not in st.session_state:
     st.session_state.messages = []
-# === END CHANGE 2 ===
 
 # ==========================================
-# PAYMENT REDIRECT HANDLER (before auth check)
+# PAYMENT REDIRECT HANDLER
 # ==========================================
 query_params = st.query_params
 if "session_id" in query_params and not st.session_state.get("payment_processed", False):
@@ -313,7 +310,7 @@ if "session_id" in query_params and not st.session_state.get("payment_processed"
 # 3. AUTHENTICATION GATE
 # ==========================================
 if not st.session_state.authenticated:
-    col1, col2, col3 = st.columns([1,2,1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade Terminal</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; color: #a0a0a0;'>Institutional-Grade Trading Engine</h3>", unsafe_allow_html=True)
@@ -333,49 +330,49 @@ if not st.session_state.authenticated:
                     _terms_accepted = getattr(user, 'terms_accepted', True)
                     db.close()
 
-                    if user:
-                        st.session_state.authenticated = True
-                        st.session_state.username = _username
+                    st.session_state.authenticated = True
+                    st.session_state.username = _username
 
-                        if PAYMENTS_AVAILABLE:
-                            db_check = SessionLocal()
-                            sub_status = check_subscription(db_check, _username)
-                            db_check.close()
-                            if sub_status.get("status") == "expired":
-                                st.warning("Your Pro subscription has expired. You have been downgraded to Starter.")
-                            elif sub_status.get("status") == "active" and sub_status.get("end_date"):
-                                try:
-                                    end_date_str = sub_status["end_date"]
-                                    if end_date_str and end_date_str != "None":
-                                        end_date_check = datetime.strptime(end_date_str[:19], "%Y-%m-%d %H:%M:%S")
-                                        if end_date_check < datetime.utcnow():
-                                            db_check2 = SessionLocal()
-                                            downgrade_user(db_check2, _username)
-                                            db_check2.close()
-                                            st.warning("Your Pro subscription has expired. You've been moved to Starter.")
-                                except Exception:
-                                    pass
+                    if PAYMENTS_AVAILABLE:
+                        db_check = SessionLocal()
+                        sub_status = check_subscription(db_check, _username)
+                        db_check.close()
+                        if sub_status.get("status") == "expired":
+                            st.warning("Your Pro subscription has expired. You have been downgraded to Starter.")
+                        elif sub_status.get("status") == "active" and sub_status.get("end_date"):
+                            try:
+                                end_date_str = sub_status["end_date"]
+                                if end_date_str and end_date_str != "None":
+                                    end_date_check = datetime.strptime(end_date_str[:19], "%Y-%m-%d %H:%M:%S")
+                                    if end_date_check < datetime.utcnow():
+                                        db_check2 = SessionLocal()
+                                        downgrade_user(db_check2, _username)
+                                        db_check2.close()
+                                        st.warning("Your Pro subscription has expired. You've been moved to Starter.")
+                            except Exception:
+                                pass
 
-                        if not _terms_accepted:
-                            st.session_state.needs_onboarding = True
-                            st.session_state.onboarding_step = 1
-                        else:
-                            st.session_state.trading_engine.terms_accepted = True
-                            st.session_state.trading_engine.terms_accepted_date = datetime.utcnow()
+                    if not _terms_accepted:
+                        st.session_state.needs_onboarding = True
+                        st.session_state.onboarding_step = 1
+                    else:
+                        st.session_state.trading_engine.terms_accepted = True
+                        st.session_state.trading_engine.terms_accepted_date = datetime.utcnow()
 
-                        st.session_state.username = _username
-                        st.session_state.trading_engine.set_username(_username)
-                        st.session_state.trading_engine._load_trade_log()
+                    st.session_state.username = _username
+                    st.session_state.trading_engine.set_username(_username)
+                    st.session_state.trading_engine._load_trade_log()
 
-                        if AUDIT_AVAILABLE:
-                            try: log_login_audit(_username)
-                            except Exception: pass
-                        st.success("Login successful!")
-                        st.rerun()
+                    if AUDIT_AVAILABLE:
+                        try:
+                            log_login_audit(_username)
+                        except Exception:
+                            pass
+                    st.success("Login successful!")
+                    st.rerun()
                 else:
                     st.error("⛔ Invalid Username or Password.")
-                    if not user:
-                        db.close()
+                    db.close()
 
         with register_tab:
             new_user = st.text_input("Choose a Username", key="reg_user")
@@ -428,17 +425,14 @@ if st.session_state.needs_onboarding:
     if step == 1:
         st.markdown("### Step 1 of 4: 🏦 Create Your Alpaca Account")
         st.markdown("""
-**Alpaca** is our brokerage partner that executes your trades. Paper Trading is **100% free** — you get a simulated account with fake money to test your strategies.
+        **Alpaca** is our brokerage partner that executes your trades. Paper Trading is **100% free**.
 
-**What you need to do:**
-1. Go to [Alpaca Markets](https://alpaca.markets) and create a free account
-2. Navigate to your **Paper Trading** dashboard
-3. Go to **App Settings → API Keys**
-4. Generate a new API Key and Secret Key
-5. Copy both keys — you'll paste them into the Settings panel in the sidebar
-
-> 💡 **Tip:** Paper trading uses real market data but fake money. It's the safest way to learn!
-""")
+        1. Go to [Alpaca Markets](https://alpaca.markets) and create a free account
+        2. Navigate to your **Paper Trading** dashboard
+        3. Go to **App Settings → API Keys**
+        4. Generate a new API Key and Secret Key
+        5. Copy both keys — you'll paste them into the Settings panel in the sidebar
+        """)
         st.markdown("[🌐 Go to Alpaca Markets](https://alpaca.markets)")
         if st.button("➡️ Next Step", use_container_width=True, type="primary", key="onb_next_1"):
             st.session_state.onboarding_step = 2
@@ -447,16 +441,12 @@ if st.session_state.needs_onboarding:
     elif step == 2:
         st.markdown("### Step 2 of 4: 🧠 OpenAI Account (Optional)")
         st.markdown("""
-**OpenAI** powers the AI News Sentiment analysis in the Scanner & Analysis tab. It reads financial news headlines and provides a sentiment score for each stock.
+        **OpenAI** powers the AI News Sentiment analysis. It's **completely optional**.
 
-**This is completely optional** — the bot works fine without it. But if you want AI-powered news insights:
-
-1. Go to [OpenAI Platform](https://platform.openai.com) and create an account
-2. Navigate to **API Keys** and generate a new key
-3. A **$5 free credit** is included — this lasts for months of normal use
-
-> 💡 **Cost:** Each sentiment analysis costs less than $0.001. Your $5 credit will last a very long time!
-""")
+        1. Go to [OpenAI Platform](https://platform.openai.com) and create an account
+        2. Navigate to **API Keys** and generate a new key
+        3. A **$5 free credit** is included — this lasts for months
+        """)
         st.markdown("[🌐 Go to OpenAI Platform](https://platform.openai.com)")
         col_skip, col_next = st.columns(2)
         with col_skip:
@@ -471,19 +461,12 @@ if st.session_state.needs_onboarding:
     elif step == 3:
         st.markdown("### Step 3 of 4: 📡 Discord Alerts (Optional)")
         st.markdown("""
-**Discord webhooks** send instant trade alerts directly to your Discord server. Get notified every time the bot buys, sells, or detects a signal.
+        **Discord webhooks** send instant trade alerts directly to your Discord server. **Completely optional.**
 
-**This is completely optional** — the bot runs fine without Discord alerts.
-
-**How to set up a Discord webhook:**
-1. Open [Discord](https://discord.com) and go to your server
-2. Go to **Server Settings → Integrations → Webhooks**
-3. Click **Create Webhook** and give it a name (e.g., "CascadeTrade Alerts")
-4. Copy the **Webhook URL**
-5. Paste it into the Settings panel in the sidebar
-
-> 💡 **Tip:** Create two webhooks — one for live trade alerts and one for daily P&L summaries!
-""")
+        1. Open [Discord](https://discord.com) and go to your server
+        2. Go to **Server Settings → Integrations → Webhooks**
+        3. Click **Create Webhook** and copy the **Webhook URL**
+        """)
         st.markdown("[🌐 Go to Discord](https://discord.com)")
         col_skip, col_next = st.columns(2)
         with col_skip:
@@ -498,18 +481,13 @@ if st.session_state.needs_onboarding:
     elif step == 4:
         st.markdown("### Step 4 of 4: 🎉 You're Ready!")
         st.markdown("""
-🎊 **Congratulations!** You're all set to start using CascadeTrade Terminal.
+        🎊 **Congratulations!** You're all set to start using CascadeTrade Terminal.
 
-**Quick start guide:**
-1. 📌 Enter your Alpaca API keys in the **Settings** panel (left sidebar)
-2. 🔌 Click **Connect** in the Auto Trade tab
-3. 🎮 Start with **Paper Trading** to test the system
-4. 📚 Check the **Academy** tab to learn how everything works
-
-> ⚠️ **Important:** Always start with Paper Trading. Never risk real money until you're confident in your settings!
-
-**You can always find your API keys and Discord settings in the sidebar.**
-""")
+        1. 📌 Enter your Alpaca API keys in the **Settings** panel (left sidebar)
+        2. 🔌 Click **Connect** in the Auto Trade tab
+        3. 🎮 Start with **Paper Trading** to test the system
+        4. 📚 Check the **Academy** tab to learn how everything works
+        """)
         if st.button("✅ Complete Setup & Enter Dashboard", use_container_width=True, type="primary", key="onb_complete"):
             db = SessionLocal()
             user = db.query(User).filter(User.username == st.session_state.username).first()
@@ -538,13 +516,12 @@ if TIERS_AVAILABLE:
     tier_display = get_tier_display(st.session_state.username)
 
 # ============================================================
-# === CHANGE 1 & 3: COMPACT SIDEBAR HEADER + SPY/VIX ===
+# SIDEBAR
 # ============================================================
 with st.sidebar:
     st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # --- COMPACT HEADER: username + tier + market + SPY/VIX ---
     tier_icon = tier_display.get("icon", "🆓")
     tier_label = tier_display.get("label", "Starter (Free)")
 
@@ -556,11 +533,9 @@ with st.sidebar:
     else:
         market_line = f"🔴 Market Closed • {market.get('day_name', '')}"
 
-    # Compact user line
     st.markdown(f"🟢 **{st.session_state.username}** • {tier_icon} {tier_label}")
     st.caption(market_line)
 
-    # Compact SPY/VIX (one line each instead of st.metric)
     try:
         spy_data = yf.Ticker("SPY").history(period="1d")
         vix_data = yf.Ticker("^VIX").history(period="1d")
@@ -578,7 +553,6 @@ with st.sidebar:
     except:
         st.caption("Market data unavailable")
 
-    # VIX filter warning
     if engine.settings.get("use_vix_filter", True) and ADVANCED_SIGNALS_AVAILABLE:
         vix_result = engine.check_vix()
         if not vix_result.get("safe_to_trade", True):
@@ -607,33 +581,27 @@ with st.sidebar:
 
         st.markdown("---")
 
-        # ---- STARTER ----
         with st.container(border=True):
             st.markdown("🆓 **Starter — Free**")
             st.caption("Paper trading • Basic signals • 3-Bucket system")
             st.markdown("""
-<small>
+            <small>
+            ✅ Paper Trading &nbsp; ✅ Basic Signals &nbsp; ✅ 3-Bucket System<br>
+            🔒 Advanced Signals &nbsp; 🔒 OpenAI Sentiment &nbsp; 🔒 Live Trading<br>
+            🔒 DRIP Calculator &nbsp; 🔒 Profit Skimming
+            </small>
+            """, unsafe_allow_html=True)
 
-✅ Paper Trading &nbsp; ✅ Basic Signals &nbsp; ✅ 3-Bucket System  
-🔒 Advanced Signals &nbsp; 🔒 OpenAI Sentiment &nbsp; 🔒 Live Trading  
-🔒 DRIP Calculator &nbsp; 🔒 Profit Skimming
-
-</small>
-""", unsafe_allow_html=True)
-
-        # ---- PRO ----
         with st.container(border=True):
             st.markdown("⚡ **Pro — £29/m**")
             st.caption("Advanced signals • AI sentiment • Live trading")
             st.markdown("""
-<small>
-
-✅ Everything in Starter &nbsp; ✅ Advanced Signals &nbsp; ✅ OpenAI Sentiment  
-✅ Live Trading &nbsp; ✅ DRIP Calculator &nbsp; ✅ Profit Skimming  
-🔒 Multiple Accounts
-
-</small>
-""", unsafe_allow_html=True)
+            <small>
+            ✅ Everything in Starter &nbsp; ✅ Advanced Signals &nbsp; ✅ OpenAI Sentiment<br>
+            ✅ Live Trading &nbsp; ✅ DRIP Calculator &nbsp; ✅ Profit Skimming<br>
+            🔒 Multiple Accounts
+            </small>
+            """, unsafe_allow_html=True)
             if current_plan != "pro":
                 pro_link = get_payment_link("pro", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
                 if pro_link and "your_pro_link" not in pro_link:
@@ -643,18 +611,15 @@ with st.sidebar:
             else:
                 st.success("✅ Current plan")
 
-        # ---- FUND ----
         with st.container(border=True):
             st.markdown("💎 **Fund — £99/m**")
             st.caption("Multi-account • Auto-rebalancing • Weekly reports")
             st.markdown("""
-<small>
-
-✅ Everything in Pro &nbsp; ✅ Multiple Accounts &nbsp; ✅ Auto-Rebalancing  
-✅ Weekly Reports &nbsp; ✅ Priority Support
-
-</small>
-""", unsafe_allow_html=True)
+            <small>
+            ✅ Everything in Pro &nbsp; ✅ Multiple Accounts &nbsp; ✅ Auto-Rebalancing<br>
+            ✅ Weekly Reports &nbsp; ✅ Priority Support
+            </small>
+            """, unsafe_allow_html=True)
             if current_plan != "fund":
                 fund_link = get_payment_link("fund", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
                 if fund_link and "your_fund_link" not in fund_link:
@@ -664,7 +629,6 @@ with st.sidebar:
             else:
                 st.success("✅ Current plan")
 
-        # ===== PAYMENT CHANGE: Check My Subscription button =====
         st.markdown("---")
         st.markdown("##### 🔍 Subscription Status")
         if st.button("🔄 Check My Subscription", use_container_width=True, key="check_sub_btn"):
@@ -693,9 +657,8 @@ with st.sidebar:
         st.markdown("##### 💳 Manage Billing")
         st.caption("Cancel, update payment method, or view invoices.")
         st.link_button("💳 Manage My Subscription", "https://billing.stripe.com/p/login/test_XXXXXXXXXXXX", use_container_width=True)
-        # ===== END PAYMENT CHANGE =====
 
-        # ---- ADMIN ----
+        # --- ADMIN (single instance only) ---
         if user_tier == "admin" and TIERS_AVAILABLE:
             st.markdown("---")
             st.markdown("### 🔧 Admin Panel")
@@ -710,8 +673,11 @@ with st.sidebar:
                     upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan")
                     if st.button("⬆️ Upgrade User", type="primary"):
                         success = upgrade_user(db_upgrade, target_user, upgrade_plan)
-                        if success: st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!"); st.rerun()
-                        else: st.error("Upgrade failed.")
+                        if success:
+                            st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!")
+                            st.rerun()
+                        else:
+                            st.error("Upgrade failed.")
                 with admin_col2:
                     st.markdown("#### Downgrade User")
                     downgrade_user_list = [u["username"] for u in all_users if u.get("tier") != "starter"]
@@ -719,49 +685,20 @@ with st.sidebar:
                         target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user")
                         if st.button("⬇️ Downgrade to Starter"):
                             success = downgrade_user(db_upgrade, target_down_user)
-                            if success: st.success(f"Successfully downgraded {target_down_user} to Starter!"); st.rerun()
-                            else: st.error("Downdowngrade failed.")
+                            if success:
+                                st.success(f"Successfully downgraded {target_down_user} to Starter!")
+                                st.rerun()
+                            else:
+                                st.error("Downgrade failed.")
                     else:
                         st.info("No paid users to downgrade.")
                 st.markdown("#### Current Users & Tiers")
                 st.dataframe(all_users, use_container_width=True, hide_index=True)
             db_upgrade.close()
 
-        # Admin Panel inside Upgrade Expander (duplicate from original)
-        if user_tier == "admin" and TIERS_AVAILABLE:
-            st.markdown("---")
-            st.markdown("### 🔧 Admin Panel")
-            db_upgrade = SessionLocal()
-            all_users = get_all_users(db_upgrade) if TIERS_AVAILABLE else []
-            if all_users:
-                admin_col1, admin_col2 = st.columns(2)
-                with admin_col1:
-                    st.markdown("#### Upgrade User")
-                    upgrade_user_list = [u["username"] for u in all_users]
-                    target_user = st.selectbox("Select User", upgrade_user_list, key="admin_upgrade_user_dup")
-                    upgrade_plan = st.selectbox("Select Plan", ["pro", "fund", "admin"], key="admin_upgrade_plan_dup")
-                    if st.button("⬆️ Upgrade User", type="primary", key="admin_upgrade_dup"):
-                        success = upgrade_user(db_upgrade, target_user, upgrade_plan)
-                        if success: st.success(f"Successfully upgraded {target_user} to {upgrade_plan.title()}!"); st.rerun()
-                        else: st.error("Upgrade failed.")
-                with admin_col2:
-                    st.markdown("#### Downgrade User")
-                    downgrade_user_list = [u["username"] for u in all_users if u.get("tier") != "starter"]
-                    if downgrade_user_list:
-                        target_down_user = st.selectbox("Select User", downgrade_user_list, key="admin_down_user_dup")
-                        if st.button("⬇️ Downgrade to Starter", key="admin_down_dup"):
-                            success = downgrade_user(db_upgrade, target_down_user)
-                            if success: st.success(f"Successfully downgraded {target_down_user} to Starter!"); st.rerun()
-                            else: st.error("Downgrade failed.")
-                    else:
-                        st.info("No paid users to downgrade.")
-                st.markdown("#### Current Users & Tiers")
-                st.dataframe(all_users, use_container_width=True, hide_index=True)
-            db_upgrade.close()
-
-    # === CHANGE 2: AI ASSISTANT EXPANDER ===
+    # === AI ASSISTANT EXPANDER ===
     AI_SYSTEM_PROMPT = """You are the CascadeTrade Assistant, a helpful AI embedded in the CascadeTrade Terminal application.
-Your purpose is to answer questions about how the app works, the 3-bucket system (Dividend, Growth, Penny), the Alpaca brokerage, and general stock market concepts.
+Your purpose is to answer questions about how the app works, the 3-bucket system, the Alpaca brokerage, and general stock market concepts.
 
 Rules:
 - DO NOT give financial advice. You are an informational assistant only.
@@ -771,7 +708,6 @@ Rules:
 - If you don't know something, say so honestly."""
 
     with st.expander("💬 AI Assistant"):
-        # Check for OpenAI key
         db_ai = SessionLocal()
         current_user_ai = db_ai.query(User).filter(User.username == st.session_state.username).first()
         openai_key = current_user_ai.openai_api_key if current_user_ai else ""
@@ -781,27 +717,21 @@ Rules:
             st.warning("Please add your OpenAI API key in ⚙️ Settings to use the AI Assistant.")
             st.chat_input("Type a message...", disabled=True, key="ai_chat_input_disabled")
         else:
-            # Display chat history
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            # Chat input
             if prompt := st.chat_input("Ask about CascadeTrade...", key="ai_chat_input"):
-                # Add user message to history and display
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
                     st.markdown(prompt)
 
-                # Get AI response
                 with st.chat_message("assistant"):
                     with st.spinner("Thinking..."):
                         response = get_ai_response(prompt, AI_SYSTEM_PROMPT, openai_key)
-                    st.markdown(response)
+                        st.markdown(response)
 
-                # Add assistant response to history
                 st.session_state.messages.append({"role": "assistant", "content": response})
-    # === END CHANGE 2 ===
 
     st.caption("⚠️ Trading involves risk. Not financial advice.")
     st.markdown("---")
@@ -812,25 +742,31 @@ Rules:
         db = SessionLocal()
         current_user = db.query(User).filter(User.username == st.session_state.username).first()
         if current_user:
-            current_webhook = current_user.discord_webhook_url if hasattr(current_user, 'discord_webhook_url') and current_user.discord_webhook_url else ""
-            current_webhook_daily = current_user.discord_webhook_url_daily if hasattr(current_user, 'discord_webhook_url_daily') and current_user.discord_webhook_url_daily else ""
-            current_openai = current_user.openai_api_key if hasattr(current_user, 'openai_api_key') and current_user.openai_api_key else ""
+            stored_key = current_user.alpaca_api_key if current_user.alpaca_api_key else ""
+            stored_secret = current_user.alpaca_secret_key if current_user.alpaca_secret_key else ""
+            current_key = safe_decrypt(stored_key)
+            current_secret = safe_decrypt(stored_secret)
+            current_webhook = current_user.discord_webhook_url if current_user.discord_webhook_url else ""
+            current_webhook_daily = current_user.discord_webhook_url_daily if current_user.discord_webhook_url_daily else ""
+            current_openai = current_user.openai_api_key if current_user.openai_api_key else ""
             current_finnhub = current_user.finnhub_api_key if hasattr(current_user, 'finnhub_api_key') and current_user.finnhub_api_key else ""
         else:
+            current_key = ""
+            current_secret = ""
             current_webhook = ""
             current_webhook_daily = ""
             current_openai = ""
             current_finnhub = ""
         db.close()
 
-        # Alpaca keys are NEVER loaded from database — session only for security
-        current_key = ""
-        current_secret = ""
+        if ENCRYPTION_READY:
+            st.caption("🔒 API keys are encrypted at rest using AES-256.")
+        else:
+            st.caption("⚠️ API keys are stored in plain text. Consider setting up encryption.")
 
         st.markdown("---")
-        new_key = st.text_input("Alpaca API Key", type="password", key="api_key_input")
-        st.caption("🔒 Keys stay in your browser only — never stored on our servers.")
-        new_secret = st.text_input("Alpaca Secret Key", type="password", key="secret_key_input")
+        new_key = st.text_input("Alpaca API Key", value=current_key, type="password", key="api_key_input")
+        new_secret = st.text_input("Alpaca Secret Key", value=current_secret, type="password", key="secret_key_input")
 
         st.markdown("---")
         st.markdown("##### 📡 Discord Webhooks")
@@ -848,7 +784,7 @@ Rules:
         st.markdown("---")
         st.markdown("##### 🔔 IPO & New Listings")
         new_finnhub = st.text_input("Finnhub API Key", value=current_finnhub, type="password", key="finnhub_input")
-        st.caption("🔔 Free key from finnhub.io. Required for IPO alerts.")
+        st.caption("🔔 Free key from finnhub.io. Required for IPO alerts. Stored per-user in the database.")
 
         st.markdown("---")
         st.markdown("##### 🔒 Privacy Mode")
@@ -872,31 +808,21 @@ Rules:
             db = SessionLocal()
             user_to_update = db.query(User).filter(User.username == st.session_state.username).first()
             if user_to_update:
-                # Alpaca keys are NOT saved to database — session only for security
-                # They're used directly from sidebar inputs when clicking Connect
-                if hasattr(user_to_update, 'discord_webhook_url'):
-                    user_to_update.discord_webhook_url = new_webhook
-                if hasattr(user_to_update, 'discord_webhook_url_daily'):
-                    user_to_update.discord_webhook_url_daily = new_webhook_daily
-                if hasattr(user_to_update, 'openai_api_key'):
-                    user_to_update.openai_api_key = new_openai
-                if hasattr(user_to_update, 'profit_skim_pct'):
-                    user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
+                user_to_update.alpaca_api_key = safe_encrypt(new_key)
+                user_to_update.alpaca_secret_key = safe_encrypt(new_secret)
+                user_to_update.discord_webhook_url = new_webhook
+                user_to_update.discord_webhook_url_daily = new_webhook_daily
+                user_to_update.openai_api_key = new_openai
+                user_to_update.profit_skim_pct = engine.settings.get("profit_skim_pct", 1.0)
                 if hasattr(user_to_update, 'finnhub_api_key'):
                     user_to_update.finnhub_api_key = new_finnhub
-                if new_finnhub:
-                    os.environ["FINNHUB_API_KEY"] = new_finnhub
-                    if IPO_SCANNER_AVAILABLE:
-                        try:
-                            from core import ipo_scanner
-                            ipo_scanner.FINNHUB_API_KEY = new_finnhub
-                        except Exception:
-                            pass
+                # Finnhub key is stored per-user in DB, NOT in os.environ (which is global)
                 db.commit()
-                st.success("Settings saved! (Alpaca keys stay in your browser only — never stored on our servers)")
+                st.success("All settings saved securely!")
             else:
                 st.error("User not found.")
             db.close()
+            st.session_state.trading_engine.connected = False
 
         with st.columns(2)[1]:
             if st.button("🔔 Test Discord", use_container_width=True):
@@ -904,20 +830,19 @@ Rules:
                     st.warning("Enter Webhook URL first.")
                 else:
                     with st.spinner("Sending..."):
-                        try:
-                            from core.alerts import send_discord_alert
-                            success = send_discord_alert(new_webhook, "🟢 **CascadeTrade Terminal is Online!**")
-                            if success: st.success("Check Discord!")
-                            else: st.error("Failed. Check URL.")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
+                        success = send_discord_message(new_webhook, "🟢 **CascadeTrade Terminal is Online!**")
+                        if success:
+                            st.success("Check Discord!")
+                        else:
+                            st.error("Failed. Check URL.")
 
-    st.markdown("---")
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.username = None
-        st.session_state.needs_onboarding = False
-        st.session_state.onboarding_step = 1
+        st.markdown("---")
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.session_state.needs_onboarding = False
+            st.session_state.onboarding_step = 1
+            st.rerun()
 
 # ==========================================
 # 4b. MAIN LAYOUT (4 Tabs)
@@ -929,7 +854,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔬 Scanner", "🤖 Auto T
 # ==========================================
 with tab1:
     st.header("Portfolio Dashboard")
-    
+
     # --- Account Metrics (4 columns) ---
     account = engine.get_account_info()
     if "error" not in account:
@@ -944,16 +869,20 @@ with tab1:
     # --- Bucket Overview (4 columns) ---
     bucket_ov = engine.get_bucket_overview()
     b1, b2, b3, b4 = st.columns(4)
-    with b1: st.metric("🟢 Dividend Pot", f"${bucket_ov['dividend']['value']:,.2f}")
-    with b2: st.metric("🔵 Growth Pot", f"${bucket_ov['growth']['value']:,.2f}")
-    with b3: st.metric("🔴 Penny Pot", f"${bucket_ov['penny']['value']:,.2f}")
-    with b4: st.metric("🟡 Withdrawal", f"${bucket_ov['withdrawal']['available']:,.2f}", "🔒 LOCKED")
+    with b1:
+        st.metric("🟢 Dividend Pot", f"${bucket_ov['dividend']['value']:,.2f}")
+    with b2:
+        st.metric("🔵 Growth Pot", f"${bucket_ov['growth']['value']:,.2f}")
+    with b3:
+        st.metric("🔴 Penny Pot", f"${bucket_ov['penny']['value']:,.2f}")
+    with b4:
+        st.metric("🟡 Withdrawal", f"${bucket_ov['withdrawal']['available']:,.2f}", "🔒 LOCKED")
 
     st.divider()
 
     # --- Positions & Bot Status (2 columns) ---
     col_pos, col_status = st.columns(2, gap="medium")
-    
+
     with col_pos:
         with st.container(border=True):
             st.subheader("Active Positions")
@@ -964,7 +893,12 @@ with tab1:
                     bucket = p.get("bucket") or engine.assign_bucket(p["symbol"]) or "penny"
                     bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
                     pl_color = "🟢" if float(p["unrealized_plpc"]) > 0 else "🔴"
-                    pos_data.append({"Symbol": f"{bucket_icon} {p['symbol']}", "Qty": p["qty"], "Value": f"${p['market_value']:,.2f}", "P&L": f"{pl_color} {p['unrealized_plpc']:+.2%}"})
+                    pos_data.append({
+                        "Symbol": f"{bucket_icon} {p['symbol']}",
+                        "Qty": p["qty"],
+                        "Value": f"${p['market_value']:,.2f}",
+                        "P&L": f"{pl_color} {p['unrealized_plpc']:+.2%}"
+                    })
                 st.dataframe(pos_data, use_container_width=True, hide_index=True)
             else:
                 st.info("No open positions.")
@@ -975,14 +909,19 @@ with tab1:
             status = engine.get_status()
             running_icon = "🟢 Running" if engine.running else "🔴 Stopped"
             st.write(f"**Status:** {running_icon} | Cycles: {status['cycle_count']} | P&L: ${status['daily_pnl']:+,.2f}")
-            
+
             st.markdown("##### Last 5 Trades")
             if engine.trade_log:
                 recent_trades = engine.trade_log[-5:]
                 trade_data = []
                 for t in reversed(recent_trades):
                     icon = "🟢" if t.get("side") == "buy" else "🔴"
-                    trade_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": f"{icon} {t.get('side', '').title()}", "Price": f"${t.get('price', 0):.2f}"})
+                    trade_data.append({
+                        "Time": t.get("timestamp", "")[:19],
+                        "Symbol": t.get("symbol", ""),
+                        "Action": f"{icon} {t.get('side', '').title()}",
+                        "Price": f"${t.get('price', 0):.2f}"
+                    })
                 st.dataframe(trade_data, use_container_width=True, hide_index=True)
             else:
                 st.info("No trades yet.")
@@ -1008,11 +947,15 @@ with tab1:
             eq_data = []
             for snap in engine.equity_snapshots:
                 row = {
-                    "Date": snap.get("date", ""), "Portfolio Value": snap.get("portfolio_value", 0),
-                    "Portfolio Return %": snap.get("portfolio_return_pct", 0), "SPY Return %": snap.get("spy_return_pct", 0),
+                    "Date": snap.get("date", ""),
+                    "Portfolio Value": snap.get("portfolio_value", 0),
+                    "Portfolio Return %": snap.get("portfolio_return_pct", 0),
+                    "SPY Return %": snap.get("spy_return_pct", 0),
                 }
-                if "dividend_value" in snap: row["Dividend"] = snap.get("dividend_value", 0)
-                elif "long_term_value" in snap: row["Dividend"] = snap.get("long_term_value", 0)
+                if "dividend_value" in snap:
+                    row["Dividend"] = snap.get("dividend_value", 0)
+                elif "long_term_value" in snap:
+                    row["Dividend"] = snap.get("long_term_value", 0)
                 row["Growth"] = snap.get("growth_value", 0)
                 row["Penny"] = snap.get("penny_value", 0)
                 row["Withdrawal"] = snap.get("withdrawal_value", snap.get("withdrawal_available", 0))
@@ -1070,8 +1013,10 @@ with tab1:
             for bucket_name, bucket_stats in by_bucket.items():
                 bucket_icon = BUCKET_ICONS.get(bucket_name, "⚪")
                 bucket_data.append({
-                    "Bucket": f"{bucket_icon} {bucket_name.title()}", "Trades": bucket_stats.get("trades", 0),
-                    "Wins": bucket_stats.get("wins", 0), "Win Rate": f"{bucket_stats.get('wins', 0) / max(bucket_stats.get('trades', 1), 1) * 100:.1f}%",
+                    "Bucket": f"{bucket_icon} {bucket_name.title()}",
+                    "Trades": bucket_stats.get("trades", 0),
+                    "Wins": bucket_stats.get("wins", 0),
+                    "Win Rate": f"{bucket_stats.get('wins', 0) / max(bucket_stats.get('trades', 1), 1) * 100:.1f}%",
                     "Return %": f"{bucket_stats.get('return_pct', 0):.2f}%",
                 })
             st.dataframe(bucket_data, use_container_width=True)
@@ -1080,7 +1025,8 @@ with tab1:
         div_check_col1, div_check_col2 = st.columns(2)
         with div_check_col1:
             if st.button("💎 Check Dividends", use_container_width=True):
-                if not engine.connected: st.error("Connect to Alpaca in Auto Trade tab first!")
+                if not engine.connected:
+                    st.error("Connect to Alpaca in Auto Trade tab first!")
                 else:
                     with st.spinner("Checking for dividend payments..."):
                         div_result = engine.check_dividends()
@@ -1089,7 +1035,7 @@ with tab1:
                                 st.success(f"💎 Found ${div_result['dividends_found']:,.2f} in dividends!")
                                 for d in div_result.get("details", []):
                                     bucket_icon = BUCKET_ICONS.get(d.get("bucket", ""), "⚪")
-                                    st.write(f"  {bucket_icon} **{d['symbol']}**: ${d['amount']:.2f} on {d['date']}")
+                                    st.write(f" {bucket_icon} **{d['symbol']}**: ${d['amount']:.2f} on {d['date']}")
                                 try:
                                     db = SessionLocal()
                                     for d in div_result.get("details", []):
@@ -1097,8 +1043,10 @@ with tab1:
                                     db.close()
                                 except Exception as e:
                                     st.warning(f"Could not save dividends to database: {e}")
-                            else: st.info("No new dividends found.")
-                        else: st.error(f"Dividend check error: {div_result.get('message', 'Unknown')}")
+                            else:
+                                st.info("No new dividends found.")
+                        else:
+                            st.error(f"Dividend check error: {div_result.get('message', 'Unknown')}")
         with div_check_col2:
             if st.button("🔍 Scan Upcoming Ex-Dividends", use_container_width=True):
                 with st.spinner("Scanning for upcoming ex-dividend dates..."):
@@ -1107,7 +1055,8 @@ with tab1:
                         st.success(f"Found {len(upcoming)} upcoming ex-dividend dates!")
                         div_data = [{"Symbol": d['symbol'], "Ex-Date": d.get("ex_date", "N/A"), "Yield": f"{d.get('dividend_yield', 0):.2f}%"} for d in upcoming]
                         st.dataframe(div_data, use_container_width=True)
-                    else: st.info("No upcoming ex-dividend dates found.")
+                    else:
+                        st.info("No upcoming ex-dividend dates found.")
 
         # Recent Dividends History Display
         div_history = engine.get_dividend_history()
@@ -1205,9 +1154,19 @@ with tab1:
             for t in reversed(filtered_trades):
                 icon = "🟢" if t.get("side") == "buy" else "🔴" if t.get("side") == "sell" else "🔵"
                 bucket = t.get("bucket") or engine.assign_bucket(t.get("symbol", "")) or "penny"
-                if bucket == "long_term": bucket = "dividend"
+                if bucket == "long_term":
+                    bucket = "dividend"
                 bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
-                trade_data_full.append({"Time": t.get("timestamp", "")[:19], "Symbol": f"{bucket_icon} {t.get('symbol', '')}", "Action": f"{icon} {t.get('side', t.get('action', '')).title()}", "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", "")})
+                trade_data_full.append({
+                    "Time": t.get("timestamp", "")[:19],
+                    "Symbol": f"{bucket_icon} {t.get('symbol', '')}",
+                    "Action": f"{icon} {t.get('side', t.get('action', '')).title()}",
+                    "Qty": t.get("qty", ""),
+                    "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "",
+                    "Bucket": bucket.title(),
+                    "Confidence": f"{(t.get('confidence') or 0):.0%}",
+                    "Reason": t.get("reason", "")
+                })
 
             st.dataframe(trade_data_full, use_container_width=True)
             st.caption(f"Showing {len(trade_data_full)} of {len(engine.trade_log)} trades")
@@ -1220,7 +1179,7 @@ with tab1:
             if journal_entries:
                 for entry in journal_entries[:5]:
                     st.write(f"📝 **{entry.get('symbol', '?')}** - {entry.get('action', '')} ({entry.get('timestamp', '')[:10]}) | Emotion: {entry.get('emotion', 'N/A')} | Lesson: {entry.get('lesson_learned', 'N/A')}")
-            
+
             with st.expander("➕ Add Journal Entry"):
                 j_symbol = st.text_input("Symbol", value="", key="journal_symbol")
                 j_action = st.selectbox("Action", ["buy", "sell", "hold"], key="journal_action")
@@ -1230,8 +1189,10 @@ with tab1:
                 if st.button("💾 Save Journal Entry"):
                     if j_symbol:
                         success = engine.save_trade_note(username=st.session_state.username, symbol=j_symbol, action=j_action, entry_reason=j_reason, emotion=j_emotion, lesson_learned=j_lesson)
-                        if success: st.success("Journal entry saved!")
-                    else: st.warning("Please enter a symbol.")
+                        if success:
+                            st.success("Journal entry saved!")
+                    else:
+                        st.warning("Please enter a symbol.")
 
     with st.expander("💾 Export & Share"):
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -1244,8 +1205,19 @@ with tab1:
             trade_data_exp = []
             for t in engine.trade_log:
                 bucket = t.get("bucket", "")
-                if bucket == "long_term": bucket = "dividend"
-                trade_data_exp.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", "")[:50], "Source": "CascadeTrade Terminal"})
+                if bucket == "long_term":
+                    bucket = "dividend"
+                trade_data_exp.append({
+                    "Time": t.get("timestamp", "")[:19],
+                    "Symbol": t.get("symbol", ""),
+                    "Action": t.get("side", t.get("action", "")),
+                    "Qty": t.get("qty", ""),
+                    "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "",
+                    "Bucket": bucket.title(),
+                    "Confidence": f"{(t.get('confidence') or 0):.0%}",
+                    "Reason": t.get("reason", "")[:50],
+                    "Source": "CascadeTrade Terminal"
+                })
             if trade_data_exp:
                 csv_string = pd.DataFrame(trade_data_exp).to_csv(index=False)
                 csv_string = watermark_csv(csv_string)
@@ -1271,7 +1243,8 @@ with tab1:
                 current_user = db.query(User).filter(User.username == st.session_state.username).first()
                 db.close()
                 webhook_url = current_user.discord_webhook_url if current_user else ""
-                if not webhook_url: st.error("Add your Discord Webhook URL in Settings.")
+                if not webhook_url:
+                    st.error("Add your Discord Webhook URL in Settings.")
                 else:
                     with st.spinner("Sending summary..."):
                         try:
@@ -1280,17 +1253,22 @@ with tab1:
                             profit_pct = bucket_ov.get('profit_pct', 0)
                             total_profit = bucket_ov['total_profit']
                             msg = f"📊 **Daily P&L Update** - {today_str}\n\n💰 **Total Profit: ${total_profit:,.2f}** ({profit_pct:+.1f}%)\n🟢 Dividend: ${bucket_ov['dividend']['value']:,.2f}\n🔵 Growth: ${bucket_ov['growth']['value']:,.2f}\n🔴 Penny: ${bucket_ov['penny']['value']:,.2f}"
-                            if send_discord_alert(webhook_url, msg): st.success("Summary posted to Discord!")
-                            else: st.error("Failed. Check URL.")
-                        except Exception as e: st.error(f"Error: {e}")
+                            if send_discord_alert(webhook_url, msg):
+                                st.success("Summary posted to Discord!")
+                            else:
+                                st.error("Failed. Check URL.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
             if st.button("📄 Upload Daily Log", use_container_width=True):
                 db = SessionLocal()
                 current_user = db.query(User).filter(User.username == st.session_state.username).first()
                 db.close()
                 webhook_url = current_user.discord_webhook_url_daily if current_user else ""
-                if not webhook_url: st.error("Add your Daily P&L Webhook URL in Settings.")
-                elif not engine.trade_log: st.warning("No trades today to upload.")
+                if not webhook_url:
+                    st.error("Add your Daily P&L Webhook URL in Settings.")
+                elif not engine.trade_log:
+                    st.warning("No trades today to upload.")
                 else:
                     with st.spinner("Uploading daily trade log..."):
                         try:
@@ -1300,17 +1278,30 @@ with tab1:
                                 trade_date = t.get("timestamp", "")[:10]
                                 if trade_date == today_str:
                                     bucket = t.get("bucket", "")
-                                    if bucket == "long_term": bucket = "dividend"
-                                    daily_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Source": "CascadeTrade Terminal"})
+                                    if bucket == "long_term":
+                                        bucket = "dividend"
+                                    daily_data.append({
+                                        "Time": t.get("timestamp", "")[:19],
+                                        "Symbol": t.get("symbol", ""),
+                                        "Action": t.get("side", t.get("action", "")),
+                                        "Qty": t.get("qty", ""),
+                                        "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "",
+                                        "Bucket": bucket.title(),
+                                        "Source": "CascadeTrade Terminal"
+                                    })
                             if daily_data:
                                 csv_text = pd.DataFrame(daily_data).to_csv(index=False)
                                 csv_text = watermark_csv(csv_text)
                                 filename = f"cascadetrade_daily_trades_{today_str}.csv"
                                 upload_success = send_discord_file(webhook_url, csv_text.encode('utf-8'), filename, f"📄 **Daily Trade Activity** - {today_str}")
-                                if upload_success: st.success("Daily log file uploaded to Discord!")
-                                else: st.warning("File upload failed, posting as text instead...")
-                            else: st.info("No trades today to upload.")
-                        except Exception as e: st.error(f"Error: {e}")
+                                if upload_success:
+                                    st.success("Daily log file uploaded to Discord!")
+                                else:
+                                    st.warning("File upload failed, posting as text instead...")
+                            else:
+                                st.info("No trades today to upload.")
+                        except Exception as e:
+                            st.error(f"Error: {e}")
 
         st.markdown("---")
         st.markdown("##### 🔒 Private Export")
@@ -1320,8 +1311,20 @@ with tab1:
             export_data = []
             for t in engine.trade_log:
                 bucket = t.get("bucket", "")
-                if bucket == "long_term": bucket = "dividend"
-                export_data.append({"Time": t.get("timestamp", "")[:19], "Symbol": t.get("symbol", ""), "Action": t.get("side", t.get("action", "")), "Qty": t.get("qty", ""), "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "", "Bucket": bucket.title(), "Confidence": f"{(t.get('confidence') or 0):.0%}", "Reason": t.get("reason", ""), "Sector": t.get("sector", ""), "Source": "CascadeTrade Terminal"})
+                if bucket == "long_term":
+                    bucket = "dividend"
+                export_data.append({
+                    "Time": t.get("timestamp", "")[:19],
+                    "Symbol": t.get("symbol", ""),
+                    "Action": t.get("side", t.get("action", "")),
+                    "Qty": t.get("qty", ""),
+                    "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "",
+                    "Bucket": bucket.title(),
+                    "Confidence": f"{(t.get('confidence') or 0):.0%}",
+                    "Reason": t.get("reason", ""),
+                    "Sector": t.get("sector", ""),
+                    "Source": "CascadeTrade Terminal"
+                })
             csv_string = pd.DataFrame(export_data).to_csv(index=False)
             csv_string = watermark_csv(csv_string)
             st.download_button(label="📥 Download Private Trade History (Watermarked)", data=csv_string.encode('utf-8'), file_name=f'cascadetrade_private_trades_{today_str}.csv')
@@ -1330,7 +1333,14 @@ with tab1:
         if div_history:
             div_export = []
             for d in div_history:
-                div_export.append({"Date": d.get("date", ""), "Symbol": d.get("symbol", ""), "Amount": d.get("amount", 0), "Bucket": d.get("bucket", ""), "Status": d.get("status", ""), "Source": "CascadeTrade Terminal"})
+                div_export.append({
+                    "Date": d.get("date", ""),
+                    "Symbol": d.get("symbol", ""),
+                    "Amount": d.get("amount", 0),
+                    "Bucket": d.get("bucket", ""),
+                    "Status": d.get("status", ""),
+                    "Source": "CascadeTrade Terminal"
+                })
             div_csv = pd.DataFrame(div_export).to_csv(index=False)
             div_csv = watermark_csv(div_csv)
             st.download_button(label="📥 Download Dividend History (Watermarked)", data=div_csv.encode('utf-8'), file_name=f'cascadetrade_dividends_{today_str}.csv', mime='text/csv', use_container_width=True)
@@ -1362,19 +1372,25 @@ with tab2:
         def load_custom_list():
             if os.path.exists(save_file):
                 try:
-                    with open(save_file, "r") as f: return f.read()
-                except: return ""
+                    with open(save_file, "r") as f:
+                        return f.read()
+                except:
+                    return ""
             return ""
 
         def save_custom_list(text_data):
             try:
-                with open(save_file, "w") as f: f.write(text_data)
+                with open(save_file, "w") as f:
+                    f.write(text_data)
                 return True
-            except: return False
+            except:
+                return False
 
         col1, col2 = st.columns([3, 1])
-        with col1: scan_mode = st.selectbox("Select Universe", ["S&P 500 (US Blue Chips)", "Tech Giants", "High Volatility", "Custom List"])
-        with col2: run_scan = st.button("▶️ Run Scan", type="primary", use_container_width=True)
+        with col1:
+            scan_mode = st.selectbox("Select Universe", ["S&P 500 (US Blue Chips)", "Tech Giants", "High Volatility", "Custom List"])
+        with col2:
+            run_scan = st.button("▶️ Run Scan", type="primary", use_container_width=True)
 
         tickers = []
         if scan_mode == "S&P 500 (US Blue Chips)":
@@ -1389,7 +1405,8 @@ with tab2:
             st.info(f"Loaded {len(tickers)} Volatile stocks.")
         elif scan_mode == "Custom List":
             default_text = load_custom_list()
-            if not default_text: default_text = "AAPL, TSLA, BA"
+            if not default_text:
+                default_text = "AAPL, TSLA, BA"
             user_list = st.text_area("Enter Tickers (comma separated)", value=default_text, height=100)
             tickers = [t.strip().upper() for t in user_list.split(',') if t.strip()]
             st.info(f"Loaded {len(tickers)} custom tickers.")
@@ -1417,11 +1434,16 @@ with tab2:
                             try:
                                 sym_df = batch_df[symbol].copy() if len(chunk) > 1 else batch_df.copy()
                                 sym_df.columns = [str(col).lower().replace(' ', '_') for col in sym_df.columns]
-                                if 'adj_close' in sym_df.columns: sym_df = sym_df.drop(columns=['adj_close'])
-                                if 'close' in sym_df.columns: sym_df = sym_df.dropna(subset=['close'])
-                                if not sym_df.empty and len(sym_df) >= 20: batch_data[symbol] = sym_df
-                            except Exception: failed_symbols.append(symbol)
-                    except Exception: failed_symbols.extend(chunk)
+                                if 'adj_close' in sym_df.columns:
+                                    sym_df = sym_df.drop(columns=['adj_close'])
+                                if 'close' in sym_df.columns:
+                                    sym_df = sym_df.dropna(subset=['close'])
+                                if not sym_df.empty and len(sym_df) >= 20:
+                                    batch_data[symbol] = sym_df
+                            except Exception:
+                                failed_symbols.append(symbol)
+                    except Exception:
+                        failed_symbols.extend(chunk)
                     prog.progress(min(0.8, (c + len(chunk)) / len(tickers) * 0.8))
 
                 if failed_symbols:
@@ -1432,14 +1454,17 @@ with tab2:
                                 df_single = yf.Ticker(symbol).history(period="3mo")
                                 if df_single is not None and not df_single.empty and len(df_single) >= 20:
                                     df_single.columns = [c.lower() for c in df_single.columns]
-                                    if 'adj_close' in df_single.columns: df_single = df_single.drop(columns=['adj_close'])
+                                    if 'adj_close' in df_single.columns:
+                                        df_single = df_single.drop(columns=['adj_close'])
                                     batch_data[symbol] = df_single
-                            except Exception: pass
+                            except Exception:
+                                pass
 
                 prog.progress(0.85)
 
                 for i, symbol in enumerate(tickers):
-                    if symbol not in batch_data: continue
+                    if symbol not in batch_data:
+                        continue
                     df = batch_data[symbol]
                     try:
                         rsi_series = ta.momentum.RSIIndicator(df['close']).rsi()
@@ -1449,39 +1474,64 @@ with tab2:
                         curr_vol = df['volume'].iloc[-1]
                         rvol = curr_vol / avg_vol if avg_vol > 0 else 0
 
-                        if not np.isnan(rsi_val): rsi_dict[symbol] = rsi_val
-                        if np.isnan(rsi_val): rsi_val = 50.0
+                        if not np.isnan(rsi_val):
+                            rsi_dict[symbol] = rsi_val
+                        if np.isnan(rsi_val):
+                            rsi_val = 50.0
 
                         rvol_icon = "💥" if rvol > 2.0 else ""
-                        if rsi_val < 30: status = f"🟢 BUY {rvol_icon}"
-                        elif rsi_val > 70: status = f"🔴 SELL {rvol_icon}"
-                        elif rsi_val < 40: status = "🌱 BUY ZONE"
-                        elif rsi_val > 60: status = "🍂 SELL ZONE"
-                        else: status = "⚪ NEUTRAL"
+                        if rsi_val < 30:
+                            status = f"🟢 BUY {rvol_icon}"
+                        elif rsi_val > 70:
+                            status = f"🔴 SELL {rvol_icon}"
+                        elif rsi_val < 40:
+                            status = "🌱 BUY ZONE"
+                        elif rsi_val > 60:
+                            status = "🍂 SELL ZONE"
+                        else:
+                            status = "⚪ NEUTRAL"
 
                         bucket = engine.assign_bucket(symbol)
                         bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
                         div_icon = "💎" if symbol in DIVIDEND_STOCKS else ""
 
-                        results.append({"Ticker": symbol, "Price": f"${price:.2f}", "RVOL": f"{rvol:.1f}", "RSI": f"{rsi_val:.0f}", "Bucket": f"{bucket_icon} {bucket.title()}", "Status": status})
-                    except Exception: pass
+                        results.append({
+                            "Ticker": symbol,
+                            "Price": f"${price:.2f}",
+                            "RVOL": f"{rvol:.1f}",
+                            "RSI": f"{rsi_val:.0f}",
+                            "Bucket": f"{bucket_icon} {bucket.title()}",
+                            "Status": status
+                        })
+                    except Exception:
+                        pass
 
                 prog.progress(1.0)
                 if results:
                     df_res = pd.DataFrame(results)
+
                     def color_rsi(val):
                         try:
                             v = float(val)
-                            if v < 30: return 'background-color: #d4edda; color: black'
-                            elif v > 70: return 'background-color: #f8d7da; color: black'
-                            else: return ''
-                        except: return ''
+                            if v < 30:
+                                return 'background-color: #d4edda; color: black'
+                            elif v > 70:
+                                return 'background-color: #f8d7da; color: black'
+                            else:
+                                return ''
+                        except:
+                            return ''
+
                     def color_rvol(val):
                         try:
                             v = float(val)
-                            if v > 2.0: return 'background-color: #fff3cd; color: black'
-                            else: return ''
-                        except: return ''
+                            if v > 2.0:
+                                return 'background-color: #fff3cd; color: black'
+                            else:
+                                return ''
+                        except:
+                            return ''
+
                     styled_df = df_res.style.map(color_rsi, subset=['RSI']).map(color_rvol, subset=['RVOL'])
                     st.dataframe(styled_df, use_container_width=True)
 
@@ -1594,7 +1644,8 @@ with tab2:
                                     models.append(("XGBoost", xgb_model))
                                     predictions_test.append(xgb_model.predict(X_test))
                                     final_predictions.append(xgb_model.predict(X.iloc[[-1]])[0])
-                                except Exception: pass
+                                except Exception:
+                                    pass
 
                             if LIGHTGBM_AVAILABLE:
                                 try:
@@ -1604,7 +1655,8 @@ with tab2:
                                     models.append(("LightGBM", lgb_model))
                                     predictions_test.append(lgb_model.predict(X_test))
                                     final_predictions.append(lgb_model.predict(X.iloc[[-1]])[0])
-                                except Exception: pass
+                                except Exception:
+                                    pass
 
                             avg_test_predictions = np.mean(predictions_test, axis=0)
                             prediction = np.mean(final_predictions)
@@ -1612,7 +1664,8 @@ with tab2:
                             ss_tot = np.sum((y_test.values - np.mean(y_test.values)) ** 2)
                             score = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
                             current_price = float(df_ml['close'].iloc[-1])
-                            if np.isnan(current_price) or current_price <= 0: current_price = price
+                            if np.isnan(current_price) or current_price <= 0:
+                                current_price = price
 
                             diff = prediction - current_price
                             col_m1, col_m2 = st.columns(2)
@@ -1625,8 +1678,10 @@ with tab2:
 
                             model_names = ", ".join([m[0] for m in models])
                             st.caption(f"Ensemble: {model_names} ({len(models)} models, {len(feature_cols)} features)")
-                            if score < 0.5: st.warning(f"Model Confidence: {score*100:.1f}% (Low)")
-                            else: st.success(f"Model Confidence: {score*100:.1f}%")
+                            if score < 0.5:
+                                st.warning(f"Model Confidence: {score*100:.1f}% (Low)")
+                            else:
+                                st.success(f"Model Confidence: {score*100:.1f}%")
 
                             with st.expander("📊 Feature Importance"):
                                 importances = models[0][1].feature_importances_
@@ -1656,11 +1711,14 @@ with tab2:
                                             title = content.get('title') or item.get('title') or 'No Title'
                                             publisher = content.get('provider', {}).get('displayName') or item.get('publisher') or 'Unknown'
                                             summary = content.get('summary') or item.get('summary') or ''
-                                            if summary and len(summary) > 10: summary_text = f" — {summary[:200]}"
-                                            else: summary_text = ""
+                                            if summary and len(summary) > 10:
+                                                summary_text = f" — {summary[:200]}"
+                                            else:
+                                                summary_text = ""
                                             news_text += f"- {title} ({publisher}){summary_text}\n"
 
-                                    if not news_text: news_text = f"No recent news headlines available for {deep_ticker}."
+                                    if not news_text:
+                                        news_text = f"No recent news headlines available for {deep_ticker}."
 
                                     with st.spinner("OpenAI is reading the news..."):
                                         try:
@@ -1698,7 +1756,7 @@ with tab2:
                             st.info("No new listings detected since last scan.")
 
         with col_scan2:
-           if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
+            if st.button("📅 Check Upcoming IPOs (Finnhub)", use_container_width=True):
                 finnhub_key = ""
                 try:
                     db_finnhub = SessionLocal()
@@ -1735,10 +1793,12 @@ with tab2:
         if st.session_state.new_symbols_found:
             for symbol in st.session_state.new_symbols_found:
                 col_sym1, col_sym2 = st.columns([3, 1])
-                with col_sym1: st.write(f"**{symbol}** — Newly Tradable")
+                with col_sym1:
+                    st.write(f"**{symbol}** — Newly Tradable")
                 with col_sym2:
                     watchlist = engine.settings.get("watchlist", [])
-                    if symbol in watchlist: st.success("✅ In Watchlist")
+                    if symbol in watchlist:
+                        st.success("✅ In Watchlist")
                     else:
                         if st.button(f"➕ Add {symbol}", key=f"add_{symbol}"):
                             watchlist.append(symbol)
@@ -1753,7 +1813,13 @@ with tab2:
         if st.session_state.upcoming_ipos_found:
             ipo_data = []
             for ipo in st.session_state.upcoming_ipos_found:
-                ipo_data.append({"Symbol": ipo.get("symbol", "N/A"), "Company": ipo.get("name", "Unknown"), "Date": ipo.get("date", "N/A"), "Exchange": ipo.get("exchange", "N/A"), "Price Range": ipo.get("price_range", "N/A")})
+                ipo_data.append({
+                    "Symbol": ipo.get("symbol", "N/A"),
+                    "Company": ipo.get("name", "Unknown"),
+                    "Date": ipo.get("date", "N/A"),
+                    "Exchange": ipo.get("exchange", "N/A"),
+                    "Price Range": ipo.get("price_range", "N/A")
+                })
             st.dataframe(ipo_data, use_container_width=True, hide_index=True)
         else:
             st.info("No IPO data loaded. Click 'Check Upcoming IPOs' above to fetch from Finnhub.")
@@ -1884,7 +1950,7 @@ with tab2:
 with tab3:
     engine = st.session_state.trading_engine
     is_locked = (user_tier == "starter")
-    
+
     auto_sub1, auto_sub2, auto_sub3 = st.tabs(["🎮 Control", "📊 Signals & Positions", "⚙️ Settings"])
 
     # --- SUB-TAB 1: CONTROL ---
@@ -1892,7 +1958,7 @@ with tab3:
 
         # --- ACCOUNT METRICS ---
         st.markdown("##### 🔌 Connection & Account")
-        
+
         if not engine.connected:
             st.warning("Not connected to Alpaca. Enter your API keys in the sidebar Settings and click Connect.")
             account = {"error": "not_connected"}
@@ -1909,11 +1975,14 @@ with tab3:
 
         # --- CONNECT / RECONNECT + BOT CONTROL ---
         col_btn1, col_btn2, col_btn3 = st.columns(3)
-        
+
         with col_btn1:
             if st.button("🔌 Connect" if not engine.connected else "🔄 Reconnect", use_container_width=True, type="primary" if not engine.connected else "secondary"):
-                api_key = st.session_state.get("api_key_input", "")
-                secret_key = st.session_state.get("secret_key_input", "")
+                db = SessionLocal()
+                current_user = db.query(User).filter(User.username == st.session_state.username).first()
+                api_key = current_user.alpaca_api_key if current_user else ""
+                secret_key = current_user.alpaca_secret_key if current_user else ""
+                db.close()
                 if not api_key or not secret_key:
                     st.error("Please enter your Alpaca API keys in the Settings sidebar.")
                 else:
@@ -1942,19 +2011,23 @@ with tab3:
                         st.session_state.confirm_start_bot = False
                         engine.start()
                         market = engine.is_market_open()
-                        if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
-                        else: st.success("Bot started!")
+                        if not market.get("is_open", True):
+                            st.warning("Market is closed. Bot will trade when it opens.")
+                        else:
+                            st.success("Bot started!")
                         st.rerun()
                 else:
                     if st.button("▶️ Start Bot", use_container_width=True):
-                        if not engine.connected: st.error("Connect to Alpaca first!")
+                        if not engine.connected:
+                            st.error("Connect to Alpaca first!")
                         else:
                             st.session_state.confirm_start_bot = True
                             st.rerun()
 
         with col_btn3:
             if st.button("🔍 Scan Once", use_container_width=True):
-                if not engine.connected: st.error("Connect to Alpaca first!")
+                if not engine.connected:
+                    st.error("Connect to Alpaca first!")
                 else:
                     with st.spinner("Scanning for signals..."):
                         signals = engine.scan_signals()
@@ -1962,7 +2035,8 @@ with tab3:
                             buy_count = sum(1 for s in signals if s["signal"] == "BUY")
                             sell_count = sum(1 for s in signals if s["signal"] == "SELL")
                             st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells")
-                        else: st.info("No signals found this scan.")
+                        else:
+                            st.info("No signals found this scan.")
 
         # --- Confirm Start Bot Warning ---
         if st.session_state.confirm_start_bot:
@@ -1973,8 +2047,10 @@ with tab3:
                     st.session_state.confirm_start_bot = False
                     engine.start()
                     market = engine.is_market_open()
-                    if not market.get("is_open", True): st.warning("Market is closed. Bot will trade when it opens.")
-                    else: st.success("Bot started!")
+                    if not market.get("is_open", True):
+                        st.warning("Market is closed. Bot will trade when it opens.")
+                    else:
+                        st.success("Bot started!")
                     st.rerun()
             with confirm_c2:
                 if st.button("❌ Cancel", use_container_width=True):
@@ -1996,17 +2072,24 @@ with tab3:
         pen_symbols = [p["symbol"] for p in all_positions if engine.assign_bucket(p["symbol"]) == "penny"]
 
         div_label = f"{bucket_ov['dividend']['positions']} positions"
-        if div_symbols: div_label += f" ({', '.join(div_symbols[:5])})"
+        if div_symbols:
+            div_label += f" ({', '.join(div_symbols[:5])})"
         gro_label = f"{bucket_ov['growth']['positions']} positions"
-        if gro_symbols: gro_label += f" ({', '.join(gro_symbols[:5])})"
+        if gro_symbols:
+            gro_label += f" ({', '.join(gro_symbols[:5])})"
         pen_label = f"{bucket_ov['penny']['positions']} positions"
-        if pen_symbols: pen_label += f" ({', '.join(pen_symbols[:5])})"
+        if pen_symbols:
+            pen_label += f" ({', '.join(pen_symbols[:5])})"
 
         b1, b2, b3, b4, b5 = st.columns(5)
-        with b1: st.metric("🟢 Dividend Pot", f"${bucket_ov['dividend']['value']:,.2f}", div_label)
-        with b2: st.metric("🔵 Growth Pot", f"${bucket_ov['growth']['value']:,.2f}", gro_label)
-        with b3: st.metric("🔴 Penny Pot", f"${bucket_ov['penny']['value']:,.2f}", pen_label)
-        with b4: st.metric("🟡 Withdrawal", f"${bucket_ov['withdrawal']['available']:,.2f}", "🔒 LOCKED")
+        with b1:
+            st.metric("🟢 Dividend Pot", f"${bucket_ov['dividend']['value']:,.2f}", div_label)
+        with b2:
+            st.metric("🔵 Growth Pot", f"${bucket_ov['growth']['value']:,.2f}", gro_label)
+        with b3:
+            st.metric("🔴 Penny Pot", f"${bucket_ov['penny']['value']:,.2f}", pen_label)
+        with b4:
+            st.metric("🟡 Withdrawal", f"${bucket_ov['withdrawal']['available']:,.2f}", "🔒 LOCKED")
         with b5:
             profit_color = "🟢" if bucket_ov['total_profit'] >= 0 else "🔴"
             st.metric(f"{profit_color} Total Profit", f"${bucket_ov['total_profit']:,.2f}", f"{bucket_ov.get('profit_pct', 0):.1f}% from ${bucket_ov['original_capital']:,.0f}")
@@ -2017,10 +2100,14 @@ with tab3:
 
         if "error" not in account:
             col_a1, col_a2, col_a3, col_a4 = st.columns(4)
-            with col_a1: st.metric("Portfolio", f"${account['portfolio_value']:,.2f}")
-            with col_a2: st.metric("Cash", f"${account['cash']:,.2f}")
-            with col_a3: st.metric("Buying Power", f"${account['buying_power']:,.2f}")
-            with col_a4: st.metric("Equity", f"${account['equity']:,.2f}")
+            with col_a1:
+                st.metric("Portfolio", f"${account['portfolio_value']:,.2f}")
+            with col_a2:
+                st.metric("Cash", f"${account['cash']:,.2f}")
+            with col_a3:
+                st.metric("Buying Power", f"${account['buying_power']:,.2f}")
+            with col_a4:
+                st.metric("Equity", f"${account['equity']:,.2f}")
         else:
             st.warning("Connect to Alpaca to see account info.")
 
@@ -2056,7 +2143,8 @@ with tab3:
 
         with col_sell:
             if st.button("🛑 Sell Everything", type="primary", use_container_width=True):
-                if not engine.connected: st.error("Connect to Alpaca first!")
+                if not engine.connected:
+                    st.error("Connect to Alpaca first!")
                 else:
                     st.session_state.confirm_sell_everything = True
                     st.rerun()
@@ -2078,7 +2166,7 @@ with tab3:
                                 for pos in result.get("positions_sold", []):
                                     bucket_icon = BUCKET_ICONS.get(pos.get("bucket", "growth"), "⚪")
                                     pl_str = f" ({pos.get('pl_pct', 0):+.1f}%)" if pos.get("pl_pct", 0) != 0 else ""
-                                    st.write(f"  {bucket_icon} Sold **{pos['symbol']}**: ${pos['market_value']:,.2f}{pl_str}")
+                                    st.write(f" {bucket_icon} Sold **{pos['symbol']}**: ${pos['market_value']:,.2f}{pl_str}")
                                 st.rerun()
                             elif result["status"] == "no_positions":
                                 st.info(result["message"])
@@ -2093,7 +2181,8 @@ with tab3:
 
         with col_rebalance:
             if st.button("🔄 Rebalance (Sell All → Redistribute)", use_container_width=True):
-                if not engine.connected: st.error("Connect to Alpaca first!")
+                if not engine.connected:
+                    st.error("Connect to Alpaca first!")
                 else:
                     st.session_state.confirm_rebalance = True
                     st.rerun()
@@ -2118,7 +2207,7 @@ with tab3:
                                             st.info("No positions to sell and no money in Withdrawal Pot to redistribute.")
                                         else:
                                             st.warning("Sold positions but redistribution failed. Money is safe in Withdrawal Pot.")
-                                            st.rerun()
+                                        st.rerun()
                                     else:
                                         st.error(redis_result.get("message", "Redistribution error"))
                                         st.rerun()
@@ -2151,26 +2240,38 @@ with tab3:
                 with btn_col1:
                     if st.button("🟢→ Dividend", use_container_width=True, help=f"Move ${move_amount:,.2f} to Dividend Pot"):
                         result = engine.move_from_withdrawal(move_amount, "dividend")
-                        if result["status"] == "success": st.success(result["message"]); st.rerun()
-                        else: st.error(result["message"])
+                        if result["status"] == "success":
+                            st.success(result["message"])
+                            st.rerun()
+                        else:
+                            st.error(result["message"])
 
                 with btn_col2:
                     if st.button("🔵→ Growth", use_container_width=True, help=f"Move ${move_amount:,.2f} to Growth Pot"):
                         result = engine.move_from_withdrawal(move_amount, "growth")
-                        if result["status"] == "success": st.success(result["message"]); st.rerun()
-                        else: st.error(result["message"])
+                        if result["status"] == "success":
+                            st.success(result["message"])
+                            st.rerun()
+                        else:
+                            st.error(result["message"])
 
                 with btn_col3:
                     if st.button("🔴→ Penny", use_container_width=True, help=f"Move ${move_amount:,.2f} to Penny Pot"):
                         result = engine.move_from_withdrawal(move_amount, "penny")
-                        if result["status"] == "success": st.success(result["message"]); st.rerun()
-                        else: st.error(result["message"])
+                        if result["status"] == "success":
+                            st.success(result["message"])
+                            st.rerun()
+                        else:
+                            st.error(result["message"])
 
                 with btn_col4:
                     if st.button("🔄 Redistribute All", use_container_width=True, help="Distribute entire Withdrawal Pot across all 3 buckets based on your allocation %"):
                         result = engine.redistribute_from_withdrawal()
-                        if result["status"] == "success": st.success(result["message"]); st.rerun()
-                        else: st.error(result["message"])
+                        if result["status"] == "success":
+                            st.success(result["message"])
+                            st.rerun()
+                        else:
+                            st.error(result["message"])
         else:
             st.info("🟡 Withdrawal Pot is empty. Use **Sell Everything** or **Extract Profits** to add money to the Withdrawal Pot.")
 
@@ -2182,20 +2283,20 @@ with tab3:
             st.markdown("##### 🛡️ Profit Skimming (Auto-Lock)")
             skim_pct_current = int(engine.settings.get("profit_skim_pct", 1.0) * 100)
             profit_skim = st.slider(
-                "Profit Skimming %", 
+                "Profit Skimming %",
                 min_value=0, max_value=100, value=skim_pct_current, step=5,
                 help="When the bot sells a profitable stock, this % of the PROFIT goes directly to your 🟡 Withdrawal Pot (locked from trading). The original buy price returns to the trading bucket. 100% = Lock all profits safely."
             )
             engine.settings["profit_skim_pct"] = profit_skim / 100
-            
+
             if profit_skim == 100:
                 st.success("🛡️ 100% Skimming: ALL profits are locked in your Withdrawal Pot. The bot will only ever trade with its original capital.")
             elif profit_skim == 0:
                 st.warning("⚠️ 0% Skimming: All profits are reinvested. Higher potential gains, but higher risk of giving profits back to the market.")
             else:
                 st.info(f"🛡️ {profit_skim}% Skimming: {profit_skim}% of profits go to Withdrawal Pot, {100-profit_skim}% gets reinvested.")
-            
-            st.markdown("---")    
+
+            st.markdown("---")
             use_pct = st.checkbox("Use % threshold instead of $ amount", value=engine.settings.get("use_pct_threshold", False))
             if use_pct:
                 threshold_pct = st.number_input("Profit Threshold (%)", min_value=5.0, max_value=100.0, value=float(engine.settings.get("profit_threshold_pct", 0.20) * 100), step=1.0, format="%.1f")
@@ -2227,7 +2328,16 @@ with tab3:
                 icon = "🟢" if s["signal"] == "BUY" else "🔴"
                 bucket = s.get("bucket") or engine.assign_bucket(s["symbol"]) or "penny"
                 bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
-                sig_data.append({"Signal": f"{icon} {s['signal']}", "Symbol": f"{bucket_icon} {s['symbol']}", "Bucket": bucket.title(), "Price": f"${s['price']:.2f}", "RSI": s["rsi"], "RVOL": s["rvol"], "Confidence": f"{s['confidence']:.0%}", "Reason": s["reason"]})
+                sig_data.append({
+                    "Signal": f"{icon} {s['signal']}",
+                    "Symbol": f"{bucket_icon} {s['symbol']}",
+                    "Bucket": bucket.title(),
+                    "Price": f"${s['price']:.2f}",
+                    "RSI": s["rsi"],
+                    "RVOL": s["rvol"],
+                    "Confidence": f"{s['confidence']:.0%}",
+                    "Reason": s["reason"]
+                })
             st.dataframe(sig_data, use_container_width=True)
         else:
             st.info("No active signals.")
@@ -2245,8 +2355,11 @@ with tab3:
                     div_icon = "💎" if p["symbol"] in DIVIDEND_STOCKS else ""
                     pos_data.append({
                         "Symbol": f"{bucket_icon}{div_icon} {p['symbol']}",
-                        "Bucket": bucket.title(), "Qty": p["qty"], "Entry": f"${p['avg_entry_price']:.2f}",
-                        "Current": f"${p['current_price']:.2f}", "Value": f"${p['market_value']:,.2f}",
+                        "Bucket": bucket.title(),
+                        "Qty": p["qty"],
+                        "Entry": f"${p['avg_entry_price']:.2f}",
+                        "Current": f"${p['current_price']:.2f}",
+                        "Value": f"${p['market_value']:,.2f}",
                         "P&L": f"{pl_color} ${p['unrealized_pl']:+,.2f} ({p['unrealized_plpc']:+.2%})",
                     })
                 st.dataframe(pos_data, use_container_width=True)
@@ -2263,7 +2376,8 @@ with tab3:
             for t in reversed(recent_trades):
                 icon = "🟢" if t.get("side") == "buy" else "🔴" if t.get("side") == "sell" else "🔵"
                 bucket = t.get("bucket") or engine.assign_bucket(t.get("symbol", "")) or "penny"
-                if bucket == "long_term": bucket = "dividend"
+                if bucket == "long_term":
+                    bucket = "dividend"
                 bucket_icon = BUCKET_ICONS.get(bucket, "⚪")
                 trade_data.append({
                     "Time": t.get("timestamp", "")[:19],
@@ -2303,48 +2417,66 @@ with tab3:
 
         if is_locked:
             st.warning("🔒 **Starter Plan:** Risk settings are locked to safe defaults. Upgrade to Pro to unlock advanced risk controls.")
-        
+
         tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
-        
+
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             max_pos_limit = tier_limits.get("max_positions", 10)
             max_pos = st.slider("📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.", disabled=is_locked)
             engine.settings["max_positions"] = max_pos
-            if max_pos > 20: st.error("🔴 **Risk:** More than 20 positions increases exposure & margin risk significantly.")
-            elif max_pos > 10: st.warning("🟡 **Moderate:** Holding 11-20 positions requires more capital.")
-            else: st.success("🟢 **Safe:** Holding 10 or fewer positions.")
+            if max_pos > 20:
+                st.error("🔴 **Risk:** More than 20 positions increases exposure & margin risk significantly.")
+            elif max_pos > 10:
+                st.warning("🟡 **Moderate:** Holding 11-20 positions requires more capital.")
+            else:
+                st.success("🟢 **Safe:** Holding 10 or fewer positions.")
 
             max_pos_pct = st.slider("💰 Max Position %", 2, 25, int(engine.settings["max_position_pct"] * 100), step=1, format="%d%%", help="Max % of your total portfolio value put into a single stock. 8% is safe.", disabled=is_locked)
             engine.settings["max_position_pct"] = max_pos_pct / 100
-            if max_pos_pct > 15: st.error("🔴 **Risk:** Concentrated positions (>15%) can cause large losses if the stock drops.")
-            elif max_pos_pct > 8: st.warning("🟡 **Moderate:** Positions 9-15% are concentrated. One bad trade hurts more.")
-            else: st.success("🟢 **Safe:** Positions 8% or less protect your capital.")
+            if max_pos_pct > 15:
+                st.error("🔴 **Risk:** Concentrated positions (>15%) can cause large losses if the stock drops.")
+            elif max_pos_pct > 8:
+                st.warning("🟡 **Moderate:** Positions 9-15% are concentrated. One bad trade hurts more.")
+            else:
+                st.success("🟢 **Safe:** Positions 8% or less protect your capital.")
 
             daily_loss = st.slider("🛑 Daily Loss Limit %", 1, 10, int(engine.settings["daily_loss_limit_pct"] * 100), step=1, format="%d%%", help="Stops trading for the day if your daily losses exceed this %. 3% is recommended.", disabled=is_locked)
             engine.settings["daily_loss_limit_pct"] = daily_loss / 100
-            if daily_loss > 5: st.error("🔴 **Risk:** Higher loss limits (>5%) risk larger drawdowns and can wipe out weeks of gains.")
-            elif daily_loss > 3: st.warning("🟡 **Moderate:** A 4-5% daily loss is tough to recover from.")
-            else: st.success("🟢 **Safe:** A 3% daily loss limit protects your capital.")
+            if daily_loss > 5:
+                st.error("🔴 **Risk:** Higher loss limits (>5%) risk larger drawdowns and can wipe out weeks of gains.")
+            elif daily_loss > 3:
+                st.warning("🟡 **Moderate:** A 4-5% daily loss is tough to recover from.")
+            else:
+                st.success("🟢 **Safe:** A 3% daily loss limit protects your capital.")
 
         with col_g2:
             stop_loss = st.slider("🛡️ Stop Loss %", 1, 20, int(engine.settings["stop_loss_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock if it drops this %. Tight stops (<3%) get triggered by normal volatility.", disabled=is_locked)
             engine.settings["stop_loss_pct"] = stop_loss / 100
-            if stop_loss < 3: st.error("🔴 **Risk:** Tight stops (<3%) get triggered by normal market volatility, causing frequent stop-outs.")
-            elif stop_loss < 5: st.warning("🟡 **Moderate:** 3-4% stops are tight. You may get sold out on normal dips.")
-            else: st.success("🟢 **Safe:** 5%+ stops give stocks room to breathe.")
+            if stop_loss < 3:
+                st.error("🔴 **Risk:** Tight stops (<3%) get triggered by normal market volatility, causing frequent stop-outs.")
+            elif stop_loss < 5:
+                st.warning("🟡 **Moderate:** 3-4% stops are tight. You may get sold out on normal dips.")
+            else:
+                st.success("🟢 **Safe:** 5%+ stops give stocks room to breathe.")
 
             take_profit = st.slider("🎯 Take Profit %", 5, 50, int(engine.settings["take_profit_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock when it reaches this % profit. Higher targets may never be reached.", disabled=is_locked)
             engine.settings["take_profit_pct"] = take_profit / 100
-            if take_profit > 20: st.error("🔴 **Risk:** Very high targets (>20%) may never be reached, causing you to hold losers longer.")
-            elif take_profit > 10: st.warning("🟡 **Moderate:** 11-20% targets take longer to hit. Greed can be risky.")
-            else: st.success("🟢 **Safe:** 10% targets lock in profits reliably.")
+            if take_profit > 20:
+                st.error("🔴 **Risk:** Very high targets (>20%) may never be reached, causing you to hold losers longer.")
+            elif take_profit > 10:
+                st.warning("🟡 **Moderate:** 11-20% targets take longer to hit. Greed can be risky.")
+            else:
+                st.success("🟢 **Safe:** 10% targets lock in profits reliably.")
 
             min_conf = st.slider("🎯 Min Confidence", 0.05, 0.95, engine.settings["min_confidence"], step=0.05, format="%.2f", help="Minimum signal confidence required to buy. Lower % = more trades, but more false signals.", disabled=is_locked)
             engine.settings["min_confidence"] = min_conf
-            if min_conf < 0.15: st.error("🔴 **Risk:** Lower than 15% confidence means buying on very weak signals (essentially guessing).")
-            elif min_conf < 0.25: st.warning("🟡 **Moderate:** 15-24% confidence accepts weaker signals. More trades, less accuracy.")
-            else: st.success("🟢 **Safe:** 25%+ ensures only decent signals trigger buys.")
+            if min_conf < 0.15:
+                st.error("🔴 **Risk:** Lower than 15% confidence means buying on very weak signals (essentially guessing).")
+            elif min_conf < 0.25:
+                st.warning("🟡 **Moderate:** 15-24% confidence accepts weaker signals. More trades, less accuracy.")
+            else:
+                st.success("🟢 **Safe:** 25%+ ensures only decent signals trigger buys.")
 
         st.markdown("---")
         col_r1, col_r2, col_r3 = st.columns(3)
@@ -2353,9 +2485,12 @@ with tab3:
         with col_r2:
             min_rvol = st.slider("💥 Min RVOL", 0.0, 5.0, engine.settings.get("min_rvol", 1.5), step=0.1, format="%.1f", help="Minimum volume spike required for a buy signal. Lower = more trades, but less reliable.", disabled=is_locked)
             engine.settings["min_rvol"] = min_rvol
-            if min_rvol < 1.0: st.error("🔴 Low volume signals are unreliable.")
-            elif min_rvol < 1.5: st.warning("🟡 Moderate volume backing.")
-            else: st.success("🟢 Strong volume backing.")
+            if min_rvol < 1.0:
+                st.error("🔴 Low volume signals are unreliable.")
+            elif min_rvol < 1.5:
+                st.warning("🟡 Moderate volume backing.")
+            else:
+                st.success("🟢 Strong volume backing.")
         with col_r3:
             scan_interval = st.slider("⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans. Lower = faster but uses more API calls.", disabled=is_locked)
             engine.settings["scan_interval_min"] = scan_interval
@@ -2464,7 +2599,7 @@ with tab3:
                 use_multi = False
             else:
                 use_multi = st.checkbox("🔭 Multi-Timeframe Confirmation", value=engine.settings.get("use_multi_timeframe", False), key="multi_timeframe_exp")
-            engine.settings["use_multi_timeframe"] = use_multi
+                engine.settings["use_multi_timeframe"] = use_multi
 
             engine.save_settings()
 
@@ -2483,7 +2618,8 @@ with tab3:
                 max_p = st.number_input("Max Price $", value=500.0, step=10.0)
 
             if st.button("🔄 Build Auto Watchlist"):
-                if not engine.connected: st.error("Connect to Alpaca first.")
+                if not engine.connected:
+                    st.error("Connect to Alpaca first.")
                 else:
                     with st.spinner(f"Scanning Alpaca universe for top {top_n} stocks..."):
                         wl = engine.auto_build_watchlist(top_n=top_n, min_price=min_p, max_price=max_p)
@@ -2503,376 +2639,376 @@ with tab4:
 
     with st.expander("🎓 1. Getting Started (Beginner)"):
         st.markdown("""
-**What is CascadeTrade Terminal?**
-CascadeTrade is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
+        **What is CascadeTrade Terminal?**
+        CascadeTrade is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
 
-**What are the 3 buckets?**
-Your money is split into three buckets based on risk:
-- 🟢 **Dividend Pot:** Steady income, lower risk, slow growth. Buys stocks that pay dividends.
-- 🔵 **Growth Pot:** Moderate risk, faster growth, more volatility. Buys large companies without dividends.
-- 🔴 **Penny Pot:** High risk, high reward potential, can lose everything. Buys stocks under $5.
-- 🟡 **Withdrawal Pot:** Your profit pot. LOCKED from trading. Only you can withdraw from here.
+        **What are the 3 buckets?**
+        Your money is split into three buckets based on risk:
+        - 🟢 **Dividend Pot:** Steady income, lower risk, slow growth. Buys stocks that pay dividends.
+        - 🔵 **Growth Pot:** Moderate risk, faster growth, more volatility. Buys large companies without dividends.
+        - 🔴 **Penny Pot:** High risk, high reward potential, can lose everything. Buys stocks under $5.
+        - 🟡 **Withdrawal Pot:** Your profit pot. LOCKED from trading. Only you can withdraw from here.
 
-**How does the bot decide what to buy/sell?**
-The bot uses technical indicators (RSI, MACD, Bollinger Bands, Volume) to find stocks that are oversold (cheap) or overbought (expensive). When a stock hits a buy signal, it checks your risk settings before buying.
+        **How does the bot decide what to buy/sell?**
+        The bot uses technical indicators (RSI, MACD, Bollinger Bands, Volume) to find stocks that are oversold (cheap) or overbought (expensive). When a stock hits a buy signal, it checks your risk settings before buying.
 
-**What is paper trading vs real money?**
-CascadeTrade starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
+        **What is paper trading vs real money?**
+        CascadeTrade starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
 
-**Glossary of terms:**
-- **RSI (Relative Strength Index):** Measures if a stock is overbought (too high) or oversold (too low).
-- **Volume / RVOL:** How many shares are being traded. High volume = strong signal.
-- **Stop Loss:** Auto-sells a stock if it drops by a certain % to prevent big losses.
-- **Take Profit:** Auto-sells a stock when it goes up by a certain % to lock in gains.
-- **Confidence:** How strong the buy/sell signal is (0-100%).
-""")
+        **Glossary of terms:**
+        - **RSI (Relative Strength Index):** Measures if a stock is overbought (too high) or oversold (too low).
+        - **Volume / RVOL:** How many shares are being traded. High volume = strong signal.
+        - **Stop Loss:** Auto-sells a stock if it drops by a certain % to prevent big losses.
+        - **Take Profit:** Auto-sells a stock when it goes up by a certain % to lock in gains.
+        - **Confidence:** How strong the buy/sell signal is (0-100%).
+        """)
 
     with st.expander("⚠️ 2. Understanding Risk (Important)"):
         st.markdown("""
-**What does each slider do?**
-- **Max Positions:** How many stocks you can hold at once. More positions = higher exposure.
-- **Max Position %:** The max % of your portfolio put into one stock. Higher = more concentrated risk.
-- **Daily Loss Limit %:** Stops trading for the day if you lose this %. 3% is safe.
-- **Stop Loss %:** Auto-sells a stock if it drops this %. Tighter (<3%) gets triggered by normal dips.
-- **Take Profit %:** Auto-sells a stock when it rises this %. Higher targets may never be reached.
-- **Min Confidence:** Minimum signal strength required to buy. Lower = more trades, but more false signals.
-- **Min RVOL:** Minimum volume spike required. Lower than 1.0 means trading on low interest.
-- **Penny % Allocation:** How much money goes to penny stocks. They are extremely high risk.
+        **What does each slider do?**
+        - **Max Positions:** How many stocks you can hold at once. More positions = higher exposure.
+        - **Max Position %:** The max % of your portfolio put into one stock. Higher = more concentrated risk.
+        - **Daily Loss Limit %:** Stops trading for the day if you lose this %. 3% is safe.
+        - **Stop Loss %:** Auto-sells a stock if it drops this %. Tighter (<3%) gets triggered by normal dips.
+        - **Take Profit %:** Auto-sells a stock when it rises this %. Higher targets may never be reached.
+        - **Min Confidence:** Minimum signal strength required to buy. Lower = more trades, but more false signals.
+        - **Min RVOL:** Minimum volume spike required. Lower than 1.0 means trading on low interest.
+        - **Penny % Allocation:** How much money goes to penny stocks. They are extremely high risk.
 
-**Why defaults are set to "safe trader" levels:**
-The default settings (Stop Loss 5%, Take Profit 10%, etc.) are designed to protect beginners from blowing up their accounts. They give stocks room to breathe while locking in profits reliably.
+        **Why defaults are set to "safe trader" levels:**
+        The default settings (Stop Loss 5%, Take Profit 10%, etc.) are designed to protect beginners from blowing up their accounts. They give stocks room to breathe while locking in profits reliably.
 
-**What happens if you increase risk (with real examples):**
-- **Stop Loss at 2%:** You buy a stock at $100. It drops to $98 (a normal bad day). The bot sells. It goes back up to $110 the next week. You missed the recovery because your stop was too tight.
-- **Daily Loss at 10%:** The market has a bad crash. You lose 10% of your entire portfolio in one day. A 10% loss requires an 11.1% gain just to break even.
-- **Penny Allocation at 50%:** Half your money is in stocks under $5. These companies frequently go bankrupt. You could lose half your account permanently.
+        **What happens if you increase risk (with real examples):**
+        - **Stop Loss at 2%:** You buy a stock at $100. It drops to $98 (a normal bad day). The bot sells. It goes back up to $110 the next week. You missed the recovery because your stop was too tight.
+        - **Daily Loss at 10%:** The market has a bad crash. You lose 10% of your entire portfolio in one day. A 10% loss requires an 11.1% gain just to break even.
+        - **Penny Allocation at 50%:** Half your money is in stocks under $5. These companies frequently go bankrupt. You could lose half your account permanently.
 
-**Why penny stocks are dangerous:**
-Penny stocks (under $5) are cheap for a reason—often the companies are failing, have low liquidity, or are subject to scams. While they can double quickly, they can also go to $0 just as fast.
+        **Why penny stocks are dangerous:**
+        Penny stocks (under $5) are cheap for a reason—often the companies are failing, have low liquidity, or are subject to scams. While they can double quickly, they can also go to $0 just as fast.
 
-**The difference between confidence % and signal strength:**
-A stock with 20% confidence means 4 out of 5 indicators are disagreeing. The bot is basically guessing. 25%+ means a slight majority of indicators agree. 50%+ means strong agreement.
-""")
+        **The difference between confidence % and signal strength:**
+        A stock with 20% confidence means 4 out of 5 indicators are disagreeing. The bot is basically guessing. 25%+ means a slight majority of indicators agree. 50%+ means strong agreement.
+        """)
 
     with st.expander("🪣 3. The 3-Bucket System"):
         st.markdown("""
-**How your money is protected:**
-Instead of putting all your money in one place, CascadeTrade splits it into buckets:
+        **How your money is protected:**
+        Instead of putting all your money in one place, CascadeTrade splits it into buckets:
 
-🟢 **Dividend Pot (Steady, Slow, Safe):**
-Buys stocks that pay you just for holding them. These are large, established companies (like Coca-Cola or Johnson & Johnson). They don't grow fast, but they pay you cash regularly.
+        🟢 **Dividend Pot (Steady, Slow, Safe):**
+        Buys stocks that pay you just for holding them. These are large, established companies (like Coca-Cola or Johnson & Johnson). They don't grow fast, but they pay you cash regularly.
 
-🔵 **Growth Pot (Moderate Risk, Faster Growth):**
-Buys large companies that don't pay dividends but are growing fast (like Amazon or Meta). More volatile, but higher upside potential.
+        🔵 **Growth Pot (Moderate Risk, Faster Growth):**
+        Buys large companies that don't pay dividends but are growing fast (like Amazon or Meta). More volatile, but higher upside potential.
 
-🔴 **Penny Pot (High Risk, High Reward):**
-Buys stocks under $5. These are usually small, new, or struggling companies. They can double in a day, or go to zero. **Never put more than 30% of your money here.**
+        🔴 **Penny Pot (High Risk, High Reward):**
+        Buys stocks under $5. These are usually small, new, or struggling companies. They can double in a day, or go to zero. **Never put more than 30% of your money here.**
 
-🟡 **Withdrawal Pot (LOCKED):**
-Your profit pot. When the bot makes money, it skims a percentage (or all) of the profit into this pot. **The bot CANNOT trade with money in the Withdrawal Pot.** This guarantees you keep your gains.
+        🟡 **Withdrawal Pot (LOCKED):**
+        Your profit pot. When the bot makes money, it skims a percentage (or all) of the profit into this pot. **The bot CANNOT trade with money in the Withdrawal Pot.** This guarantees you keep your gains.
 
-**How profits flow:**
-Penny Profits → Growth Pot → Growth Profits → Dividend Pot → Dividends → Withdrawal Pot → Your Bank Account
+        **How profits flow:**
+        Penny Profits → Growth Pot → Growth Profits → Dividend Pot → Dividends → Withdrawal Pot → Your Bank Account
 
-**Why this system protects your capital:**
-If the market crashes, your Dividend pot might drop 5%, your Growth pot might drop 10%, and your Penny pot might drop 30%. But because your money is spread out, and your profits are locked in Withdrawal, a crash won't wipe you out.
+        **Why this system protects your capital:**
+        If the market crashes, your Dividend pot might drop 5%, your Growth pot might drop 10%, and your Penny pot might drop 30%. But because your money is spread out, and your profits are locked in Withdrawal, a crash won't wipe you out.
 
-**Setting allocation to 0%:**
-You can completely disable any bucket by setting its allocation to 0%. The bot will skip all buy signals for that bucket. This is useful if you only want to trade 1 or 2 strategies.
-""")
+        **Setting allocation to 0%:**
+        You can completely disable any bucket by setting its allocation to 0%. The bot will skip all buy signals for that bucket. This is useful if you only want to trade 1 or 2 strategies.
+        """)
 
     with st.expander("📊 4. How Signals Work"):
         st.markdown("""
-**What is RSI (Relative Strength Index)?**
-RSI gives a number between 0 and 100. If RSI is below 30 (oversold), the stock has dropped a lot and might bounce back (potential BUY). If RSI is above 70 (overbought), the stock has risen a lot and might drop (potential SELL).
+        **What is RSI (Relative Strength Index)?**
+        RSI gives a number between 0 and 100. If RSI is below 30 (oversold), the stock has dropped a lot and might bounce back (potential BUY). If RSI is above 70 (overbought), the stock has risen a lot and might drop (potential SELL).
 
-**What is MACD?**
-Moving Average Convergence Divergence. It compares two moving averages of a stock's price. When the fast line crosses above the slow line, it's a bullish signal (price might go UP). When it crosses below, it's a bearish signal (price might go DOWN).
+        **What is MACD?**
+        Moving Average Convergence Divergence. It compares two moving averages of a stock's price. When the fast line crosses above the slow line, it's a bullish signal (price might go UP). When it crosses below, it's a bearish signal (price might go DOWN).
 
-**What are Bollinger Bands?**
-They draw a "band" around the stock's price. If the price touches the bottom band, the stock is oversold (cheap). If it touches the top band, it's overbought (expensive). When the band squeezes narrow, a big move is coming.
+        **What are Bollinger Bands?**
+        They draw a "band" around the stock's price. If the price touches the bottom band, the stock is oversold (cheap). If it touches the top band, it's overbought (expensive). When the band squeezes narrow, a big move is coming.
 
-**What does confidence % actually mean?**
-It's how many indicators agree. If RSI says buy, MACD says buy, and Bollinger says buy, confidence is high (e.g., 60-80%). If RSI says buy but MACD says sell, confidence is low (e.g., 15-20%). The bot only buys when confidence is above your minimum threshold.
+        **What does confidence % actually mean?**
+        It's how many indicators agree. If RSI says buy, MACD says buy, and Bollinger says buy, confidence is high (e.g., 60-80%). If RSI says buy but MACD says sell, confidence is low (e.g., 15-20%). The bot only buys when confidence is above your minimum threshold.
 
-**Why VIX filter blocks trades in volatile markets:**
-The VIX is the "Fear Index". When VIX is above 28, the market is panicking. During panics, normal signals don't work—stocks drop together regardless of fundamentals. The VIX filter prevents the bot from buying during market crashes.
+        **Why VIX filter blocks trades in volatile markets:**
+        The VIX is the "Fear Index". When VIX is above 28, the market is panicking. During panics, normal signals don't work—stocks drop together regardless of fundamentals. The VIX filter prevents the bot from buying during market crashes.
 
-**What is ATR position sizing?**
-Average True Range measures how much a stock typically moves in a day. A volatile stock might move $5 a day; a calm stock might move $0.50. ATR position sizing makes sure you buy fewer shares of volatile stocks and more shares of calm stocks, keeping your risk level consistent.
+        **What is ATR position sizing?**
+        Average True Range measures how much a stock typically moves in a day. A volatile stock might move $5 a day; a calm stock might move $0.50. ATR position sizing makes sure you buy fewer shares of volatile stocks and more shares of calm stocks, keeping your risk level consistent.
 
-**CascadeTrade uses multiple indicators together:**
+        **CascadeTrade uses multiple indicators together:**
 
-| Indicator | What It Detects | Weight | Tier |
-|-----------|----------------|--------|------|
-| 🔴 RSI | Overbought/Oversold | 1.0 | Free |
-| 📊 MACD | Momentum crossovers | 1.2 | Pro |
-| 📈 Bollinger Bands | Price touching extremes | 0.8 | Pro |
-| ✨ MA Crossover | Trend changes (Golden/Death Cross) | 1.5 | Pro |
-| 💥 Volume Spike | Unusual activity | 0.6 | Free |
-| 📉 ATR | Volatility (position sizing) | 0.5 | Pro |
-| 🛡️ VIX Filter | Market fear (blocks buys when VIX > 28) | N/A | Pro |
-""")
+        | Indicator | What It Detects | Weight | Tier |
+        |-----------|----------------|--------|------|
+        | 🔴 RSI | Overbought/Oversold | 1.0 | Free |
+        | 📊 MACD | Momentum crossovers | 1.2 | Pro |
+        | 📈 Bollinger Bands | Price touching extremes | 0.8 | Pro |
+        | ✨ MA Crossover | Trend changes (Golden/Death Cross) | 1.5 | Pro |
+        | 💥 Volume Spike | Unusual activity | 0.6 | Free |
+        | 📉 ATR | Volatility (position sizing) | 0.5 | Pro |
+        | 🛡️ VIX Filter | Market fear (blocks buys when VIX > 28) | N/A | Pro |
+        """)
 
     with st.expander("🖥️ 5. Reading the Dashboard"):
         st.markdown("""
-**What each number means:**
-- **Portfolio Value:** Total value of your stocks + cash.
-- **Equity:** How much you actually own (Portfolio Value minus borrowed money).
-- **Cash:** How much money is sitting in your account, not invested in stocks.
-- **Buying Power:** How much you can spend on new stocks today.
-- **Daily P&L:** How much profit or loss you made today.
+        **What each number means:**
+        - **Portfolio Value:** Total value of your stocks + cash.
+        - **Equity:** How much you actually own (Portfolio Value minus borrowed money).
+        - **Cash:** How much money is sitting in your account, not invested in stocks.
+        - **Buying Power:** How much you can spend on new stocks today.
+        - **Daily P&L:** How much profit or loss you made today.
 
-**How to read your P&L:**
-🟢 Green numbers mean profit. 🔴 Red numbers mean loss. P&L updates in real-time as stock prices change throughout the day.
+        **How to read your P&L:**
+        🟢 Green numbers mean profit. 🔴 Red numbers mean loss. P&L updates in real-time as stock prices change throughout the day.
 
-**What the bucket overview tells you:**
-The 4 colored boxes show how much money is in each bucket. The important one is **🟡 Withdrawal**—this is money the bot CANNOT touch. It's your locked-in profit.
+        **What the bucket overview tells you:**
+        The 4 colored boxes show how much money is in each bucket. The important one is **🟡 Withdrawal**—this is money the bot CANNOT touch. It's your locked-in profit.
 
-**How to interpret signals vs near-signals:**
-- **Signal:** The stock meets all your criteria (RSI, Volume, Confidence). The bot wants to buy/sell it.
-- **Near Signal:** The stock is close to a signal but not quite there (e.g., RSI is 32 but your threshold is 30). The bot is watching it but won't trade yet.
-""")
+        **How to interpret signals vs near-signals:**
+        - **Signal:** The stock meets all your criteria (RSI, Volume, Confidence). The bot wants to buy/sell it.
+        - **Near Signal:** The stock is close to a signal but not quite there (e.g., RSI is 32 but your threshold is 30). The bot is watching it but won't trade yet.
+        """)
 
     with st.expander("❌ 6. Common Mistakes"):
         st.markdown("""
-**1. Don't move sliders to risky levels without understanding**
-If you set Stop Loss to 2%, you will get sold out of trades constantly on normal dips. If you set Daily Loss to 10%, one bad day can wipe out weeks of gains. The red warnings in the settings are there for a reason.
+        **1. Don't move sliders to risky levels without understanding**
+        If you set Stop Loss to 2%, you will get sold out of trades constantly on normal dips. If you set Daily Loss to 10%, one bad day can wipe out weeks of gains. The red warnings in the settings are there for a reason.
 
-**2. Don't turn off stop losses**
-Stop losses are your emergency parachute. Without them, a stock that drops 50% requires a 100% gain just to break even. Always use stops.
+        **2. Don't turn off stop losses**
+        Stop losses are your emergency parachute. Without them, a stock that drops 50% requires a 100% gain just to break even. Always use stops.
 
-**3. Don't put all capital in the penny bucket**
-Penny stocks can be exciting, but they are extremely risky. If you put 100% of your money in the penny bucket, you could lose it all. Keep penny allocation at 30% or below.
+        **3. Don't put all capital in the penny bucket**
+        Penny stocks can be exciting, but they are extremely risky. If you put 100% of your money in the penny bucket, you could lose it all. Keep penny allocation at 30% or below.
 
-**4. Paper trade FIRST before real money**
-Paper trading uses fake money. Use it for at least 2-4 weeks to see how the bot performs. Only switch to real money when you are comfortable with the wins AND the losses.
+        **4. Paper trade FIRST before real money**
+        Paper trading uses fake money. Use it for at least 2-4 weeks to see how the bot performs. Only switch to real money when you are comfortable with the wins AND the losses.
 
-**5. Don't chase losses**
-If the bot loses money on a trade, don't immediately crank up the risk settings to "make it back faster." This is how gamblers lose everything. Stick to the safe defaults and let the bot's statistical edge play out over time.
+        **5. Don't chase losses**
+        If the bot loses money on a trade, don't immediately crank up the risk settings to "make it back faster." This is how gamblers lose everything. Stick to the safe defaults and let the bot's statistical edge play out over time.
 
-**6. Check the Withdrawal Pot regularly**
-When profits accumulate in the Withdrawal Pot, actually withdraw them to your bank account. That's the whole point of profit skimming!
-""")
+        **6. Check the Withdrawal Pot regularly**
+        When profits accumulate in the Withdrawal Pot, actually withdraw them to your bank account. That's the whole point of profit skimming!
+        """)
 
     with st.expander("❓ 7. FAQ"):
         st.markdown("""
-**How do I connect Alpaca?**
-1. Go to [Alpaca Markets](https://alpaca.markets) and create a free account.
-2. Go to your Paper Trading dashboard and generate API Keys.
-3. Paste the Key and Secret into the Settings panel in the sidebar.
-4. Click "Connect" in the Auto Trade tab.
+        **How do I connect Alpaca?**
+        1. Go to [Alpaca Markets](https://alpaca.markets) and create a free account.
+        2. Go to your Paper Trading dashboard and generate API Keys.
+        3. Paste the Key and Secret into the Settings panel in the sidebar.
+        4. Click "Connect" in the Auto Trade tab.
 
-**Paper trading vs live trading?**
-Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. CascadeTrade starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
+        **Paper trading vs live trading?**
+        Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. CascadeTrade starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
 
-**How do I withdraw profits?**
-The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this money out:
-1. Click "Move from Withdrawal" or go to your Alpaca dashboard.
-2. Transfer the funds from your Alpaca account to your linked bank account.
+        **How do I withdraw profits?**
+        The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this money out:
+        1. Click "Move from Withdrawal" or go to your Alpaca dashboard.
+        2. Transfer the funds from your Alpaca account to your linked bank account.
 
-**What happens if the bot crashes?**
-CascadeTrade runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
+        **What happens if the bot crashes?**
+        CascadeTrade runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
 
-**How do I cancel my subscription?**
-Go to the Upgrade page in the sidebar and click "Manage Subscription" or contact support.
+        **How do I cancel my subscription?**
+        Go to the Upgrade page in the sidebar and click "Manage Subscription" or contact support.
 
-**Is this financial advice?**
-No. CascadeTrade Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
-""")
+        **Is this financial advice?**
+        No. CascadeTrade Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
+        """)
 
     with st.expander("⚡ Profit Extraction & Skimming"):
         st.markdown("""
-**How profit extraction works:**
-- The bot tracks your total profit relative to your original capital
-- When your profit crosses a threshold, it automatically sells your most profitable positions
-- The freed cash goes into your **Withdrawal Pot** (locked from trading)
-- You can then withdraw this money to your bank account
+        **How profit extraction works:**
+        - The bot tracks your total profit relative to your original capital
+        - When your profit crosses a threshold, it automatically sells your most profitable positions
+        - The freed cash goes into your **Withdrawal Pot** (locked from trading)
+        - You can then withdraw this money to your bank account
 
-**Threshold types:**
-- **Percentage threshold** (default: 20%) — Extracts when your total profit exceeds 20% of your starting capital
-- **Dollar threshold** (default: $20,000) — Extracts when your total profit exceeds $20,000
+        **Threshold types:**
+        - **Percentage threshold** (default: 20%) — Extracts when your total profit exceeds 20% of your starting capital
+        - **Dollar threshold** (default: $20,000) — Extracts when your total profit exceeds $20,000
 
-**Auto-extract:** When enabled, the bot checks every cycle and extracts automatically when the threshold is hit.
+        **Auto-extract:** When enabled, the bot checks every cycle and extracts automatically when the threshold is hit.
 
-**Manual extract:** Click "⚡ Extract Profits Now" in the Auto Trade tab to force an extraction at any time.
+        **Manual extract:** Click "⚡ Extract Profits Now" in the Auto Trade tab to force an extraction at any time.
 
-**🛡️ Profit Skimming (Auto-Lock):**
-- When the bot sells a profitable stock, it splits the money based on your Profit Skimming % setting.
-- **100% Skim (Safest):** All profit goes to the 🟡 Withdrawal Pot. Only the original buy price goes back to the trading bucket. The bot can NEVER spend your profits.
-- **50% Skim:** Half the profit goes to Withdrawal, half goes back to trading to compound.
-- **0% Skim:** All money (original + profit) goes back to trading. Highest risk of giving back profits.
+        **🛡️ Profit Skimming (Auto-Lock):**
+        - When the bot sells a profitable stock, it splits the money based on your Profit Skimming % setting.
+        - **100% Skim (Safest):** All profit goes to the 🟡 Withdrawal Pot. Only the original buy price goes back to the trading bucket. The bot can NEVER spend your profits.
+        - **50% Skim:** Half the profit goes to Withdrawal, half goes back to trading to compound.
+        - **0% Skim:** All money (original + profit) goes back to trading. Highest risk of giving back profits.
 
-> 💡 **Tip:** The withdrawal pot is LOCKED from trading. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
-""")
+        > 💡 **Tip:** The withdrawal pot is LOCKED from trading. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
+        """)
 
     with st.expander("🛑 Sell Everything & Rebalance"):
         st.markdown("""
-**🛑 Sell Everything:**
-- Sells ALL open positions immediately
-- All proceeds go into your 🟡 **Withdrawal Pot** (LOCKED from trading)
-- The bot cannot use Withdrawal Pot money to buy stocks
-- Use this when you want to exit the market completely or protect profits
+        **🛑 Sell Everything:**
+        - Sells ALL open positions immediately
+        - All proceeds go into your 🟡 **Withdrawal Pot** (LOCKED from trading)
+        - The bot cannot use Withdrawal Pot money to buy stocks
+        - Use this when you want to exit the market completely or protect profits
 
-**🔄 Rebalance:**
-- Sells everything, then redistributes the cash across your 3 buckets
-- Follows your allocation percentages (e.g., 35% Dividend, 35% Growth, 30% Penny)
-- The bot will then buy new positions according to its signals
+        **🔄 Rebalance:**
+        - Sells everything, then redistributes the cash across your 3 buckets
+        - Follows your allocation percentages (e.g., 35% Dividend, 35% Growth, 30% Penny)
+        - The bot will then buy new positions according to its signals
 
-**💸 Move from Withdrawal:**
-- Move money from your 🟡 Withdrawal Pot back into a specific trading bucket
-- Options: Move to 🟢 Dividend, 🔵 Growth, or 🔴 Penny
-- Or redistribute across all 3 buckets based on your allocation percentages
-- Once money moves to a trading bucket, the bot CAN use it to buy stocks
+        **💸 Move from Withdrawal:**
+        - Move money from your 🟡 Withdrawal Pot back into a specific trading bucket
+        - Options: Move to 🟢 Dividend, 🔵 Growth, or 🔴 Penny
+        - Or redistribute across all 3 buckets based on your allocation percentages
+        - Once money moves to a trading bucket, the bot CAN use it to buy stocks
 
-**⚠️ Safety:** The Withdrawal Pot is always protected. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
-""")
+        **⚠️ Safety:** The Withdrawal Pot is always protected. The bot cannot trade with money in the Withdrawal Pot. Only you can move money out of it.
+        """)
 
     with st.expander("💎 Dividends & DRIP"):
         st.markdown("""
-**How dividends work in CascadeTrade:**
-1. When a stock you hold pays a dividend, Alpaca credits it to your account
-2. Click "💎 Check Dividends" to scan for new dividend payments
-3. Dividend income flows into your **Withdrawal Pot** (locked from trading)
-4. You can withdraw this money to your bank account
+        **How dividends work in CascadeTrade:**
+        1. When a stock you hold pays a dividend, Alpaca credits it to your account
+        2. Click "💎 Check Dividends" to scan for new dividend payments
+        3. Dividend income flows into your **Withdrawal Pot** (locked from trading)
+        4. You can withdraw this money to your bank account
 
-**Ex-Dividend Dates:**
-- The Dividends tab shows upcoming ex-dividend dates for stocks in your watchlist
-- You must own the stock **before** the ex-dividend date to receive the dividend
+        **Ex-Dividend Dates:**
+        - The Dividends tab shows upcoming ex-dividend dates for stocks in your watchlist
+        - You must own the stock **before** the ex-dividend date to receive the dividend
 
-**DRIP Calculator:**
-- DRIP = Dividend Reinvestment Plan
-- The calculator shows how much your dividend income would grow if you reinvested dividends
-- Enter a stock symbol and number of shares to see a 10-year projection
+        **DRIP Calculator:**
+        - DRIP = Dividend Reinvestment Plan
+        - The calculator shows how much your dividend income would grow if you reinvested dividends
+        - Enter a stock symbol and number of shares to see a 10-year projection
 
-**Dividend Stock Comparison:**
-- Compare dividend yields and growth rates across your watchlist
-- Helps you find the best dividend stocks for your Dividend Pot
-""")
+        **Dividend Stock Comparison:**
+        - Compare dividend yields and growth rates across your watchlist
+        - Helps you find the best dividend stocks for your Dividend Pot
+        """)
 
     with st.expander("📊 Backtesting"):
         st.markdown("""
-**What is backtesting?**
-- Testing your strategy against historical data to see how it would have performed
-- Uses the same signals and settings as live trading, but with past data
-- Does NOT guarantee future results, but helps you validate your settings
+        **What is backtesting?**
+        - Testing your strategy against historical data to see how it would have performed
+        - Uses the same signals and settings as live trading, but with past data
+        - Does NOT guarantee future results, but helps you validate your settings
 
-**How to use it:**
-1. Go to the Backtest tab
-2. Enter a list of stock symbols (or use the default list)
-3. Choose a date range and strategy
-4. Click "Run Backtest"
-5. Review the results — equity curve, win rate, drawdown, etc.
+        **How to use it:**
+        1. Go to the Backtest tab
+        2. Enter a list of stock symbols (or use the default list)
+        3. Choose a date range and strategy
+        4. Click "Run Backtest"
+        5. Review the results — equity curve, win rate, drawdown, etc.
 
-**Key metrics:**
-- **Total Return**: How much your portfolio gained or lost
-- **Win Rate**: Percentage of trades that were profitable
-- **Max Drawdown**: The largest peak-to-trough decline
-- **Sharpe Ratio**: Risk-adjusted return (higher is better, >1 is good)
-- **Profit Factor**: Total wins divided by total losses (>1 is profitable)
-""")
+        **Key metrics:**
+        - **Total Return**: How much your portfolio gained or lost
+        - **Win Rate**: Percentage of trades that were profitable
+        - **Max Drawdown**: The largest peak-to-trough decline
+        - **Sharpe Ratio**: Risk-adjusted return (higher is better, >1 is good)
+        - **Profit Factor**: Total wins divided by total losses (>1 is profitable)
+        """)
 
     with st.expander("📊 Diamond Metrics"):
         st.markdown("""
-**Beyond basic metrics — the professional standard:**
+        **Beyond basic metrics — the professional standard:**
 
-**Sortino Ratio** — Like Sharpe, but only penalizes downside volatility. >1 is good, >2 is excellent.
+        **Sortino Ratio** — Like Sharpe, but only penalizes downside volatility. >1 is good, >2 is excellent.
 
-**Calmar Ratio** — Annual return divided by maximum drawdown. >1 means you're earning more than you're risking in drawdowns.
+        **Calmar Ratio** — Annual return divided by maximum drawdown. >1 means you're earning more than you're risking in drawdowns.
 
-**Omega Ratio** — Probability of gains vs losses. >1 means more gains than losses.
+        **Omega Ratio** — Probability of gains vs losses. >1 means more gains than losses.
 
-**Best/Worst Day** — Your single best and worst day returns. Helps you understand tail risk.
+        **Best/Worst Day** — Your single best and worst day returns. Helps you understand tail risk.
 
-These metrics are available in the Portfolio tab when you have enough trade history.
-""")
+        These metrics are available in the Portfolio tab when you have enough trade history.
+        """)
 
     with st.expander("🔐 Privacy Mode"):
         st.markdown("""
-**What Privacy Mode does:**
-- When enabled, Discord alerts show **percentages only** — no dollar amounts
-- Example: "🟢 **BUY** **AAPL** (Growth) | Confidence: 75% | Stop: 6% | Target: 12%"
-- Without privacy mode, alerts show dollar amounts: "🟢 **BUY** 10 shares of **AAPL** at $150.00"
+        **What Privacy Mode does:**
+        - When enabled, Discord alerts show **percentages only** — no dollar amounts
+        - Example: "🟢 **BUY** **AAPL** (Growth) | Confidence: 75% | Stop: 6% | Target: 12%"
+        - Without privacy mode, alerts show dollar amounts: "🟢 **BUY** 10 shares of **AAPL** at $150.00"
 
-**How to enable:**
-- Go to Settings in the sidebar
-- Toggle "Privacy Mode (Discord shows % only, no $)"
+        **How to enable:**
+        - Go to Settings in the sidebar
+        - Toggle "Privacy Mode (Discord shows % only, no $)"
 
-**Why use it:**
-- If you share your Discord channel with others, they won't see your position sizes or dollar amounts
-- Your trading activity stays private while still getting alerts
-""")
+        **Why use it:**
+        - If you share your Discord channel with others, they won't see your position sizes or dollar amounts
+        - Your trading activity stays private while still getting alerts
+        """)
 
     with st.expander("📋 Trade Journal"):
         st.markdown("""
-**Why journal your trades?**
-- Professional traders review every trade to learn what works and what doesn't
-- Emotions like FOMO, anxiety, or overconfidence affect decisions more than we think
-- Tracking your emotional state helps you identify patterns
+        **Why journal your trades?**
+        - Professional traders review every trade to learn what works and what doesn't
+        - Emotions like FOMO, anxiety, or overconfidence affect decisions more than we think
+        - Tracking your emotional state helps you identify patterns
 
-**How to use it:**
-1. Go to the Portfolio tab
-2. Find "📝 Trade Journal" and click "➕ Add Journal Entry"
-3. Enter the symbol, action (buy/sell/hold), and your reasoning
-4. Select your emotional state (Confident, Anxious, FOMO, etc.)
-5. Write what you learned from this trade
+        **How to use it:**
+        1. Go to the Portfolio tab
+        2. Find "📝 Trade Journal" and click "➕ Add Journal Entry"
+        3. Enter the symbol, action (buy/sell/hold), and your reasoning
+        4. Select your emotional state (Confident, Anxious, FOMO, etc.)
+        5. Write what you learned from this trade
 
-**Review your entries:**
-- Your last 5 journal entries are shown in the Portfolio tab
-- Look for patterns: Do you make worse decisions when anxious? Do FOMO trades lose money?
-- Over time, this helps you become a more disciplined trader
-""")
+        **Review your entries:**
+        - Your last 5 journal entries are shown in the Portfolio tab
+        - Look for patterns: Do you make worse decisions when anxious? Do FOMO trades lose money?
+        - Over time, this helps you become a more disciplined trader
+        """)
 
     with st.expander("🤖 Auto Trade — How It Works"):
         st.markdown("""
-**Starting the bot:**
-1. Enter your Alpaca API keys in the sidebar Settings
-2. Click "Connect" in the Auto Trade tab
-3. Click "Start Bot" (you'll be asked to confirm)
-4. The bot will scan for signals at the interval you set (default: 5 minutes)
+        **Starting the bot:**
+        1. Enter your Alpaca API keys in the sidebar Settings
+        2. Click "Connect" in the Auto Trade tab
+        3. Click "Start Bot" (you'll be asked to confirm)
+        4. The bot will scan for signals at the interval you set (default: 5 minutes)
 
-**What the bot does each cycle:**
-1. Checks if the market is open
-2. Checks VIX filter (if enabled)
-3. Scans your watchlist for signals
-4. For each BUY signal, evaluates risk (position limits, sector limits, allocation, confidence)
-5. If approved, places a market order
-6. Checks stop losses and take profits on existing positions
-7. Checks for dividends
-8. Checks if profit extraction threshold is hit (if auto-extract enabled)
-9. Records an equity snapshot
+        **What the bot does each cycle:**
+        1. Checks if the market is open
+        2. Checks VIX filter (if enabled)
+        3. Scans your watchlist for signals
+        4. For each BUY signal, evaluates risk (position limits, sector limits, allocation, confidence)
+        5. If approved, places a market order
+        6. Checks stop losses and take profits on existing positions
+        7. Checks for dividends
+        8. Checks if profit extraction threshold is hit (if auto-extract enabled)
+        9. Records an equity snapshot
 
-**Important notes:**
-- The bot ONLY trades during US market hours (9:30 AM - 4:00 PM ET)
-- Paper trading uses fake money — you cannot lose real money
-- You can stop the bot at any time by clicking "Stop Bot"
-- You can manually scan once by clicking "Scan Once"
-""")
+        **Important notes:**
+        - The bot ONLY trades during US market hours (9:30 AM - 4:00 PM ET)
+        - Paper trading uses fake money — you cannot lose real money
+        - You can stop the bot at any time by clicking "Stop Bot"
+        - You can manually scan once by clicking "Scan Once"
+        """)
 
     with st.expander("💬 AI Assistant"):
         st.markdown("""
-**What is the AI Assistant?**
-The AI Assistant is a chatbot built into the sidebar of CascadeTrade Terminal. It can answer questions about:
-- How the 3-bucket system works
-- What each setting does
-- How signals and indicators work
-- General stock market concepts
+        **What is the AI Assistant?**
+        The AI Assistant is a chatbot built into the sidebar of CascadeTrade Terminal. It can answer questions about:
+        - How the 3-bucket system works
+        - What each setting does
+        - How signals and indicators work
+        - General stock market concepts
 
-**How to use it:**
-1. Open the 💬 AI Assistant expander in the sidebar
-2. Type your question in the chat input
-3. The AI will respond with a helpful answer
+        **How to use it:**
+        1. Open the 💬 AI Assistant expander in the sidebar
+        2. Type your question in the chat input
+        3. The AI will respond with a helpful answer
 
-**Important rules:**
-- The AI does **NOT** give financial advice
-- The AI does **NOT** discuss cryptocurrency or NFTs
-- If you ask "Should I buy AAPL?", the AI will explain how CascadeTrade would classify it, but won't tell you to buy or sell
-- You need an OpenAI API key (set in ⚙️ Settings) to use the AI Assistant
+        **Important rules:**
+        - The AI does **NOT** give financial advice
+        - The AI does **NOT** discuss cryptocurrency or NFTs
+        - If you ask "Should I buy AAPL?", the AI will explain how CascadeTrade would classify it, but won't tell you to buy or sell
+        - You need an OpenAI API key (set in ⚙️ Settings) to use the AI Assistant
 
-**Privacy:**
-- Your chat history is stored in your browser session only
-- Chat messages are sent to OpenAI for processing
-- No chat data is stored on CascadeTrade servers
-""")
+        **Privacy:**
+        - Your chat history is stored in your browser session only
+        - Chat messages are sent to OpenAI for processing
+        - No chat data is stored on CascadeTrade servers
+        """)
 
     st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
