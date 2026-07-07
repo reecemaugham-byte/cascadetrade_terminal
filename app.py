@@ -238,7 +238,7 @@ def get_ai_response(user_message, system_prompt, api_key):
 # ==========================================
 # 1. PAGE CONFIG & STYLING
 # ==========================================
-st.set_page_config(page_title="CascadeTrade Terminal", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Roleigh QuanTrader", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 hide_st_style = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -312,7 +312,7 @@ if "session_id" in query_params and not st.session_state.get("payment_processed"
 if not st.session_state.authenticated:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade Terminal</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 Roleigh QuanTrader</h1>", unsafe_allow_html=True)
         st.markdown("<h3 style='text-align: center; color: #a0a0a0;'>Institutional-Grade Trading Engine</h3>", unsafe_allow_html=True)
         st.markdown("---")
 
@@ -416,7 +416,7 @@ if not st.session_state.authenticated:
 # 3b. FIRST-TIME ONBOARDING
 # ==========================================
 if st.session_state.needs_onboarding:
-    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>🚀 Welcome to CascadeTrade Terminal</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>🚀 Welcome to Roleigh QuanTrader</h1>", unsafe_allow_html=True)
     st.markdown("<h3 style='text-align: center; color: #a0a0a0;'>Let's get you set up in a few quick steps.</h3>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -481,7 +481,7 @@ if st.session_state.needs_onboarding:
     elif step == 4:
         st.markdown("### Step 4 of 4: 🎉 You're Ready!")
         st.markdown("""
-        🎊 **Congratulations!** You're all set to start using CascadeTrade Terminal.
+        🎊 **Congratulations!** You're all set to start using Roleigh QuanTrader.
 
         1. 📌 Enter your Alpaca API keys in the **Settings** panel (left sidebar)
         2. 🔌 Click **Connect** in the Auto Trade tab
@@ -519,7 +519,7 @@ if TIERS_AVAILABLE:
 # SIDEBAR
 # ============================================================
 with st.sidebar:
-    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 CascadeTrade</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #00d4aa;'>📈 Roleigh QuanTrader</h1>", unsafe_allow_html=True)
     st.markdown("---")
 
     tier_icon = tier_display.get("icon", "🆓")
@@ -697,13 +697,13 @@ with st.sidebar:
             db_upgrade.close()
 
     # === AI ASSISTANT EXPANDER ===
-    AI_SYSTEM_PROMPT = """You are the CascadeTrade Assistant, a helpful AI embedded in the CascadeTrade Terminal application.
+    AI_SYSTEM_PROMPT = """You are the Roleigh QuanTrader Assistant, a helpful AI embedded in the Roleigh QuanTrader application.
 Your purpose is to answer questions about how the app works, the 3-bucket system, the Alpaca brokerage, and general stock market concepts.
 
 Rules:
 - DO NOT give financial advice. You are an informational assistant only.
 - DO NOT discuss cryptocurrency or NFTs.
-- If asked "Should I buy AAPL?", respond with "I cannot give financial advice, but I can tell you how CascadeTrade would classify AAPL based on its dividend yield and price."
+- If asked "Should I buy AAPL?", respond with "I cannot give financial advice, but I can tell you how Roleigh QuanTrader would classify AAPL based on its dividend yield and price."
 - Be concise and friendly.
 - If you don't know something, say so honestly."""
 
@@ -721,7 +721,7 @@ Rules:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
 
-            if prompt := st.chat_input("Ask about CascadeTrade...", key="ai_chat_input"):
+            if prompt := st.chat_input("Ask about Roleigh QuanTrader...", key="ai_chat_input"):
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
                     st.markdown(prompt)
@@ -830,7 +830,7 @@ Rules:
                     st.warning("Enter Webhook URL first.")
                 else:
                     with st.spinner("Sending..."):
-                        success = send_discord_message(new_webhook, "🟢 **CascadeTrade Terminal is Online!**")
+                        success = send_discord_message(new_webhook, "🟢 **Roleigh QuanTrader is Online!**")
                         if success:
                             st.success("Check Discord!")
                         else:
@@ -1057,6 +1057,49 @@ with tab1:
                         st.dataframe(div_data, use_container_width=True)
                     else:
                         st.info("No upcoming ex-dividend dates found.")
+                        
+        # --- Position Dividend Income Tracker ---
+        st.markdown("---")
+        st.markdown("##### 💼 Your Dividend Income (Current Positions)")
+
+        if engine.connected:
+            if st.button("📊 Show My Dividend Income", use_container_width=True, key="show_div_income"):
+                with st.spinner("Calculating dividend income for your positions..."):
+                    div_income = engine.get_position_dividend_income()
+                    if div_income:
+                        total_annual = sum(d.get("estimated_annual_income", 0) for d in div_income)
+                        total_quarterly = sum(d.get("estimated_quarterly_income", 0) for d in div_income)
+
+                        st.success(f"💰 **Estimated Annual Dividend Income: ${total_annual:,.2f}** (${total_quarterly:,.2f}/quarter)")
+
+                        div_income_data = []
+                        for d in div_income:
+                            bucket_icon = BUCKET_ICONS.get(d.get("bucket", ""), "⚪")
+                            ex_date_str = d.get("ex_date", "Unknown")
+                            days_str = f"{d.get('days_until_ex')}d" if d.get('days_until_ex') is not None else "N/A"
+                            div_income_data.append({
+                                "Symbol": f"{bucket_icon} {d['symbol']}",
+                                "Yield": f"{d.get('dividend_yield_pct', 0):.2f}%",
+                                "Qty": d.get("qty", 0),
+                                "Value": f"${d.get('market_value', 0):,.2f}",
+                                "Est. Annual Income": f"${d.get('estimated_annual_income', 0):,.2f}",
+                                "Est. Quarterly Income": f"${d.get('estimated_quarterly_income', 0):,.2f}",
+                                "Next Ex-Date": ex_date_str,
+                                "Days Until Ex": days_str,
+                                "Payout Ratio": f"{d.get('payout_ratio_pct', 0):.1f}%",
+                            })
+                        st.dataframe(div_income_data, use_container_width=True, hide_index=True)
+
+                        sell_after = engine.settings.get("dividend_settings", {}).get("sell_after_ex_dividend", False)
+                        if sell_after:
+                            st.info("🎯 **Sell After Ex-Dividend is ON** — Dividend stocks will be automatically sold 1 day after their ex-dividend date.")
+                        else:
+                            st.caption("💡 Turn on 'Sell After Ex-Dividend Date' in Settings to auto-sell dividend stocks after their ex-date.")
+                    else:
+                        st.info("No dividend-paying stocks found in your current positions.")
+        else:
+            st.warning("Connect to Alpaca to see your dividend income.")
+
 
         # Recent Dividends History Display
         div_history = engine.get_dividend_history()
@@ -1216,7 +1259,7 @@ with tab1:
                     "Bucket": bucket.title(),
                     "Confidence": f"{(t.get('confidence') or 0):.0%}",
                     "Reason": t.get("reason", "")[:50],
-                    "Source": "CascadeTrade Terminal"
+                    "Source": "Roleigh QuanTrader"
                 })
             if trade_data_exp:
                 csv_string = pd.DataFrame(trade_data_exp).to_csv(index=False)
@@ -1287,7 +1330,7 @@ with tab1:
                                         "Qty": t.get("qty", ""),
                                         "Price": f"${t.get('price', 0):.2f}" if t.get("price") else "",
                                         "Bucket": bucket.title(),
-                                        "Source": "CascadeTrade Terminal"
+                                        "Source": "Roleigh QuanTrader"
                                     })
                             if daily_data:
                                 csv_text = pd.DataFrame(daily_data).to_csv(index=False)
@@ -1305,7 +1348,7 @@ with tab1:
 
         st.markdown("---")
         st.markdown("##### 🔒 Private Export")
-        st.caption("All CSV exports are watermarked with 'Source: CascadeTrade Terminal' to protect your IP.")
+        st.caption("All CSV exports are watermarked with 'Source: Roleigh QuanTrader' to protect your IP.")
 
         if engine.trade_log:
             export_data = []
@@ -1323,7 +1366,7 @@ with tab1:
                     "Confidence": f"{(t.get('confidence') or 0):.0%}",
                     "Reason": t.get("reason", ""),
                     "Sector": t.get("sector", ""),
-                    "Source": "CascadeTrade Terminal"
+                    "Source": "Roleigh QuanTrader"
                 })
             csv_string = pd.DataFrame(export_data).to_csv(index=False)
             csv_string = watermark_csv(csv_string)
@@ -1339,20 +1382,20 @@ with tab1:
                     "Amount": d.get("amount", 0),
                     "Bucket": d.get("bucket", ""),
                     "Status": d.get("status", ""),
-                    "Source": "CascadeTrade Terminal"
+                    "Source": "Roleigh QuanTrader"
                 })
             div_csv = pd.DataFrame(div_export).to_csv(index=False)
             div_csv = watermark_csv(div_csv)
             st.download_button(label="📥 Download Dividend History (Watermarked)", data=div_csv.encode('utf-8'), file_name=f'cascadetrade_dividends_{today_str}.csv', mime='text/csv', use_container_width=True)
 
         bucket_export = [{
-            "Bucket": "Dividend", "Value": bucket_ov["dividend"]["value"], "Positions": bucket_ov["dividend"]["positions"], "Deposited": bucket_ov["dividend"]["total_deposited"], "Return": f"{((bucket_ov['dividend']['value'] - bucket_ov['dividend']['total_deposited']) / bucket_ov['dividend']['total_deposited'] * 100) if bucket_ov['dividend']['total_deposited'] > 0 else 0:.1f}%", "Dividends_Earned": bucket_ov["dividend"]["dividends_earned"], "Source": "CascadeTrade Terminal"
+            "Bucket": "Dividend", "Value": bucket_ov["dividend"]["value"], "Positions": bucket_ov["dividend"]["positions"], "Deposited": bucket_ov["dividend"]["total_deposited"], "Return": f"{((bucket_ov['dividend']['value'] - bucket_ov['dividend']['total_deposited']) / bucket_ov['dividend']['total_deposited'] * 100) if bucket_ov['dividend']['total_deposited'] > 0 else 0:.1f}%", "Dividends_Earned": bucket_ov["dividend"]["dividends_earned"], "Source": "Roleigh QuanTrader"
         }, {
-            "Bucket": "Growth", "Value": bucket_ov["growth"]["value"], "Positions": bucket_ov["growth"]["positions"], "Deposited": bucket_ov["growth"]["total_deposited"], "Return": f"{((bucket_ov['growth']['value'] - bucket_ov['growth']['total_deposited']) / bucket_ov['growth']['total_deposited'] * 100) if bucket_ov['growth']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_In": bucket_ov["growth"]["profits_moved_in"], "Source": "CascadeTrade Terminal"
+            "Bucket": "Growth", "Value": bucket_ov["growth"]["value"], "Positions": bucket_ov["growth"]["positions"], "Deposited": bucket_ov["growth"]["total_deposited"], "Return": f"{((bucket_ov['growth']['value'] - bucket_ov['growth']['total_deposited']) / bucket_ov['growth']['total_deposited'] * 100) if bucket_ov['growth']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_In": bucket_ov["growth"]["profits_moved_in"], "Source": "Roleigh QuanTrader"
         }, {
-            "Bucket": "Penny", "Value": bucket_ov["penny"]["value"], "Positions": bucket_ov["penny"]["positions"], "Deposited": bucket_ov["penny"]["total_deposited"], "Return": f"{((bucket_ov['penny']['value'] - bucket_ov['penny']['total_deposited']) / bucket_ov['penny']['total_deposited'] * 100) if bucket_ov['penny']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_Out": bucket_ov["penny"]["profits_to_growth"], "Source": "CascadeTrade Terminal"
+            "Bucket": "Penny", "Value": bucket_ov["penny"]["value"], "Positions": bucket_ov["penny"]["positions"], "Deposited": bucket_ov["penny"]["total_deposited"], "Return": f"{((bucket_ov['penny']['value'] - bucket_ov['penny']['total_deposited']) / bucket_ov['penny']['total_deposited'] * 100) if bucket_ov['penny']['total_deposited'] > 0 else 0:.1f}%", "Profits_Moved_Out": bucket_ov["penny"]["profits_to_growth"], "Source": "Roleigh QuanTrader"
         }, {
-            "Bucket": "Withdrawal", "Available": bucket_ov["withdrawal"]["available"], "Dividends_Received": bucket_ov["withdrawal"]["dividends_received"], "Profits_Extracted": bucket_ov["withdrawal"]["profits_extracted"], "Source": "CascadeTrade Terminal"
+            "Bucket": "Withdrawal", "Available": bucket_ov["withdrawal"]["available"], "Dividends_Received": bucket_ov["withdrawal"]["dividends_received"], "Profits_Extracted": bucket_ov["withdrawal"]["profits_extracted"], "Source": "Roleigh QuanTrader"
         }]
         bucket_csv = pd.DataFrame(bucket_export).to_csv(index=False)
         bucket_csv = watermark_csv(bucket_csv)
@@ -1932,7 +1975,7 @@ with tab2:
                                 st.download_button(
                                     label="📥 Download Backtest Results (Watermarked)",
                                     data=bt_csv.encode('utf-8'),
-                                    file_name=f'cascadetrade_backtest_{datetime.now().strftime("%Y-%m-%d")}.csv',
+                                    file_name=f'roleigh_quantrader_backtest_{datetime.now().strftime("%Y-%m-%d")}.csv',
                                     mime='text/csv',
                                     use_container_width=True
                                 )
@@ -1942,7 +1985,7 @@ with tab2:
                         else:
                             st.warning(f"⚠️ Backtest status: {bt_result.get('status', 'Unknown')}")
 
-        st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+        st.caption("Roleigh QuanTrader — Automated trading software. Not a financial advisor. Trading involves risk.")
 
 # ==========================================
 # TAB 3: 🤖 AUTO TRADE (Sub-tabs Layout)
@@ -2307,6 +2350,8 @@ with tab3:
 
             engine.settings["use_pct_threshold"] = use_pct
             auto_extract = st.checkbox("Auto-extract when threshold hit", value=engine.settings.get("auto_extract_profits", True))
+            profit_alerts = st.checkbox("🔔 Discord Profit/Loss Alerts", value=engine.settings.get("discord_profit_alerts", True), help="Send separate Discord messages when trades close with a profit or loss. Useful for testing.")
+            engine.settings["discord_profit_alerts"] = profit_alerts
             engine.settings["auto_extract_profits"] = auto_extract
             engine.save_settings()
 
@@ -2393,7 +2438,7 @@ with tab3:
         else:
             st.info("No trades yet.")
 
-        st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+        st.caption("Roleigh QuanTrader — Automated trading software. Not a financial advisor. Trading involves risk.")
 
         with st.expander("🔍 Bucket Debug Tool", expanded=False):
             debug_symbol = st.text_input("Enter symbol to debug bucket classification", value="KO", key="debug_bucket_symbol")
@@ -2575,6 +2620,8 @@ with tab3:
                 dividend_conf = st.slider("🎯 Min Confidence", 0.10, 0.95, dividend.get("min_confidence", 0.20), step=0.05, format="%.2f", key="dividend_conf")
                 dividend["min_confidence"] = dividend_conf
                 dividend["min_dividend_yield"] = st.slider("💰 Min Dividend Yield %", 0.0, 15.0, float(dividend.get("min_dividend_yield", 0.03) * 100), step=0.5, format="%.1f%%", key="div_min_yield", help="Stocks with dividend yield above this are classified as Dividend") / 100
+                dividend["sell_after_ex_dividend"] = st.checkbox("🎯 Sell After Ex-Dividend Date", value=dividend.get("sell_after_ex_dividend", False), help="Automatically sell dividend stocks 1 day after their ex-dividend date. You capture the dividend, then sell the stock. Only affects dividend bucket stocks.")
+                engine.settings["dividend_settings"] = dividend
             engine.settings["dividend_settings"] = dividend
 
         with st.expander("🔬 Advanced Signals", expanded=False):
@@ -2635,12 +2682,12 @@ with tab3:
 # ==========================================
 with tab4:
     st.markdown("### 📚 Academy: How It Works")
-    st.caption("Everything you need to know about CascadeTrade Terminal. Click any topic to expand it.")
+    st.caption("Everything you need to know about Roleigh QuanTrader. Click any topic to expand it.")
 
     with st.expander("🎓 1. Getting Started (Beginner)"):
         st.markdown("""
-        **What is CascadeTrade Terminal?**
-        CascadeTrade is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
+        **What is Roleigh QuanTrader?**
+        Roleigh QuanTrader is an automated trading engine that scans the stock market for buy and sell signals based on technical indicators. It executes trades on your behalf via Alpaca (a secure US brokerage).
 
         **What are the 3 buckets?**
         Your money is split into three buckets based on risk:
@@ -2653,7 +2700,7 @@ with tab4:
         The bot uses technical indicators (RSI, MACD, Bollinger Bands, Volume) to find stocks that are oversold (cheap) or overbought (expensive). When a stock hits a buy signal, it checks your risk settings before buying.
 
         **What is paper trading vs real money?**
-        CascadeTrade starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
+        Roleigh QuanTrader starts in **Paper Trading** mode by default. This uses fake money but real market data. You cannot lose real money in paper mode. **Always start here.**
 
         **Glossary of terms:**
         - **RSI (Relative Strength Index):** Measures if a stock is overbought (too high) or oversold (too low).
@@ -2693,7 +2740,7 @@ with tab4:
     with st.expander("🪣 3. The 3-Bucket System"):
         st.markdown("""
         **How your money is protected:**
-        Instead of putting all your money in one place, CascadeTrade splits it into buckets:
+        Instead of putting all your money in one place, Roleigh QuanTrader splits it into buckets:
 
         🟢 **Dividend Pot (Steady, Slow, Safe):**
         Buys stocks that pay you just for holding them. These are large, established companies (like Coca-Cola or Johnson & Johnson). They don't grow fast, but they pay you cash regularly.
@@ -2737,7 +2784,7 @@ with tab4:
         **What is ATR position sizing?**
         Average True Range measures how much a stock typically moves in a day. A volatile stock might move $5 a day; a calm stock might move $0.50. ATR position sizing makes sure you buy fewer shares of volatile stocks and more shares of calm stocks, keeping your risk level consistent.
 
-        **CascadeTrade uses multiple indicators together:**
+        **Roleigh QuanTrader uses multiple indicators together:**
 
         | Indicator | What It Detects | Weight | Tier |
         |-----------|----------------|--------|------|
@@ -2800,7 +2847,7 @@ with tab4:
         4. Click "Connect" in the Auto Trade tab.
 
         **Paper trading vs live trading?**
-        Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. CascadeTrade starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
+        Paper trading uses fake money but real market data. It's 100% free. Live trading uses real money. Roleigh QuanTrader starts in Paper mode by default. You must explicitly switch to live trading in your Alpaca dashboard (not in this app) to use real money.
 
         **How do I withdraw profits?**
         The bot automatically skims profits into your 🟡 Withdrawal Pot. To get this money out:
@@ -2808,13 +2855,13 @@ with tab4:
         2. Transfer the funds from your Alpaca account to your linked bank account.
 
         **What happens if the bot crashes?**
-        CascadeTrade runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
+        Roleigh QuanTrader runs in cycles (default: every 5 minutes). If it crashes, it will not place any new trades. Any existing stop-loss orders placed on Alpaca's servers will still execute even if the bot is offline.
 
         **How do I cancel my subscription?**
         Go to the Upgrade page in the sidebar and click "Manage Subscription" or contact support.
 
         **Is this financial advice?**
-        No. CascadeTrade Terminal is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
+        No. Roleigh QuanTrader is automated trading software. It does not provide personalized financial advice. Trading involves risk, and you can lose money. Always start with paper trading.
         """)
 
     with st.expander("⚡ Profit Extraction & Skimming"):
@@ -2866,7 +2913,7 @@ with tab4:
 
     with st.expander("💎 Dividends & DRIP"):
         st.markdown("""
-        **How dividends work in CascadeTrade:**
+        **How dividends work in Roleigh QuanTrader:**
         1. When a stock you hold pays a dividend, Alpaca credits it to your account
         2. Click "💎 Check Dividends" to scan for new dividend payments
         3. Dividend income flows into your **Withdrawal Pot** (locked from trading)
@@ -2988,7 +3035,7 @@ with tab4:
     with st.expander("💬 AI Assistant"):
         st.markdown("""
         **What is the AI Assistant?**
-        The AI Assistant is a chatbot built into the sidebar of CascadeTrade Terminal. It can answer questions about:
+        The AI Assistant is a chatbot built into the sidebar of Roleigh QuanTrader. It can answer questions about:
         - How the 3-bucket system works
         - What each setting does
         - How signals and indicators work
@@ -3002,13 +3049,13 @@ with tab4:
         **Important rules:**
         - The AI does **NOT** give financial advice
         - The AI does **NOT** discuss cryptocurrency or NFTs
-        - If you ask "Should I buy AAPL?", the AI will explain how CascadeTrade would classify it, but won't tell you to buy or sell
+        - If you ask "Should I buy AAPL?", the AI will explain how Roleigh QuanTrader would classify it, but won't tell you to buy or sell
         - You need an OpenAI API key (set in ⚙️ Settings) to use the AI Assistant
 
         **Privacy:**
         - Your chat history is stored in your browser session only
         - Chat messages are sent to OpenAI for processing
-        - No chat data is stored on CascadeTrade servers
+        - No chat data is stored on Roleigh QuanTrader servers
         """)
 
-    st.caption("CascadeTrade Terminal — Automated trading software. Not a financial advisor. Trading involves risk.")
+    st.caption("Roleigh QuanTrader — Automated trading software. Not a financial advisor. Trading involves risk.")
