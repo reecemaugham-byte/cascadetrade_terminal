@@ -250,7 +250,7 @@ def is_market_open() -> Dict:
 # ==========================================
 # CSV EXPORT
 # ==========================================
-WATERMARK = "\nSource: CascadeTrade Terminal - Unauthorized reproduction prohibited"
+WATERMARK = "\nSource: Roleigh QuanTrader - Unauthorized reproduction prohibited"
 
 
 def watermark_csv(csv_string: str) -> str:
