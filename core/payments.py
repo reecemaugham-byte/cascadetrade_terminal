@@ -52,14 +52,14 @@ STRIPE_PAYMENT_LINKS = {
 # Plan definitions for Checkout Session creation
 STRIPE_PLANS = {
     "pro": {
-        "name": "CascadeTrade Pro",
+        "name": "Roleigh QuanTrader Pro",
         "amount": 2900,
         "currency": "gbp",
         "interval": "month",
         "description": "Advanced signals, AI sentiment, live trading, DRIP calculator, profit skimming",
     },
     "fund": {
-        "name": "CascadeTrade Fund",
+        "name": "Roleigh QuanTrader Fund",
         "amount": 9900,
         "currency": "gbp",
         "interval": "month",
