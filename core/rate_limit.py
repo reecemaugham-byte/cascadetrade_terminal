@@ -1,6 +1,6 @@
 """
 core/rate_limit.py
-Login rate limiting and account lockout for QuantPro Terminal.
+Login rate limiting and account lockout for Roleigh QuanTrader.
 Prevents brute force attacks by limiting login attempts.
 """
 
