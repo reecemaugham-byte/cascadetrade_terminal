@@ -2658,7 +2658,9 @@ with tab3:
         if "Auto" in wl_mode:
             col_auto1, col_auto2 = st.columns(2)
             with col_auto1:
-                top_n = st.slider("How many stocks to scan", 20, 300, engine.settings.get("watchlist_auto_count", 100))
+                tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+                max_wl = tier_limits.get("max_watchlist", 50)
+                top_n = st.slider("How many stocks to scan", 20, max_wl, min(engine.settings.get("watchlist_auto_count", 100), max_wl))
                 engine.settings["watchlist_auto_count"] = top_n
             with col_auto2:
                 min_p = st.number_input("Min Price $", value=5.0, step=1.0)
@@ -2673,9 +2675,20 @@ with tab3:
                         st.success(f"✅ Built watchlist: {len(wl)} stocks")
         else:
             watchlist_str = ", ".join(engine.settings["watchlist"])
-            new_watchlist = st.text_area("Watchlist (comma separated)", value=watchlist_str, height=68)
+            tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+            max_wl = tier_limits.get("max_watchlist", 50)
+            current_count = len([t.strip() for t in watchlist_str.split(",") if t.strip()])
+            if current_count > max_wl:
+                st.warning(f"⚠️ Maximum {max_wl} stocks for your plan. You have {current_count}. Remove stocks or upgrade.")
+            new_watchlist = st.text_area(f"Watchlist (comma separated, max {max_wl})", value=watchlist_str, height=68)
             if new_watchlist != watchlist_str:
-                engine.settings["watchlist"] = [t.strip().upper() for t in new_watchlist.split(",") if t.strip()]
+                parsed = [t.strip().upper() for t in new_watchlist.split(",") if t.strip()]
+                tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+                max_wl = tier_limits.get("max_watchlist", 50)
+                if len(parsed) > max_wl:
+                    st.error(f"❌ Maximum {max_wl} stocks allowed. You entered {len(parsed)}. Please remove {len(parsed) - max_wl} stocks.")
+                else:
+                    engine.settings["watchlist"] = parsed
 
 # ==========================================
 # TAB 4: 📚 ACADEMY (Expanders only)
