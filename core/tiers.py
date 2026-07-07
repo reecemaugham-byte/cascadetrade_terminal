@@ -33,7 +33,7 @@ TIER_FEATURES = {
         "max_watchlist": 50,
     },
     "pro": {
-        "name": "CascadeTrade Pro",
+        "name": "Roleigh QuanTrader Pro",
         "price": "$29/month",
         "paper_trading": True,
         "basic_signals": True,
@@ -54,7 +54,7 @@ TIER_FEATURES = {
         "max_watchlist": 200,
     },
     "fund": {
-        "name": "CascadeTrade Fund",
+        "name": "Roleigh QuanTrader Fund",
         "price": "$99/month",
         "paper_trading": True,
         "basic_signals": True,
@@ -79,7 +79,7 @@ TIER_FEATURES = {
         "priority_support": True,
     },
     "admin": {
-        "name": "CascadeTrade Admin",
+        "name": "Roleigh QuanTrader Admin",
         "price": "Internal",
         "paper_trading": True,
         "basic_signals": True,
@@ -119,17 +119,17 @@ TIER_DISPLAY = {
     },
     "pro": {
         "icon": "⚡",
-        "label": "CascadeTrade Pro",
+        "label": "Roleigh QuanTrader Pro",
         "color": "#00d4aa",
     },
     "fund": {
         "icon": "💎",
-        "label": "CascadeTrade Fund",
+        "label": "Roleigh QuanTrader Fund",
         "color": "#ffd700",
     },
     "admin": {
         "icon": "🔧",
-        "label": "CascadeTrade Admin",
+        "label": "Roleigh QuanTrader Admin",
         "color": "#ff6b6b",
     },
 }
