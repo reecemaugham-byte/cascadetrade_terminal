@@ -8,6 +8,19 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import time
 import stripe
+# --- FORCE DATABASE MIGRATION FOR v2.0 ---
+import sqlalchemy
+from core.database import engine
+try:
+    with engine.connect() as conn:
+        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_mode VARCHAR DEFAULT 'paper'"))
+        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'free' WHERE tier = 'starter'"))
+        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'live_trading' WHERE tier = 'pro'"))
+        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'pro_trader' WHERE tier = 'fund'"))
+        conn.commit()
+except Exception as e:
+    pass # Ignore if already done
+# --- END FORCE MIGRATION ---
 
 # ==========================================
 # SET DEFAULTS
