@@ -3548,8 +3548,14 @@ class TradingEngine:
         except Exception as e:
             self._log_error("profit_skimming", str(e), symbol)
 
-    def connect_encrypted(self, api_key: str, secret_key: str, base_url: str = None) -> bool:
-        """Connect to Alpaca using encrypted API keys."""
+    def connect_encrypted(self, api_key: str, secret_key: str, live_mode: bool = False) -> bool:
+        """Connect to Alpaca using encrypted API keys.
+        
+        Args:
+            api_key: Encrypted or plain API key
+            secret_key: Encrypted or plain secret key
+            live_mode: If True, connect to live trading URL. If False, connect to paper trading URL.
+        """
         try:
             if ENCRYPTION_AVAILABLE:
                 try:
@@ -3558,7 +3564,10 @@ class TradingEngine:
                 except Exception:
                     pass
 
-            if base_url is None:
+            # Switch URL based on trading mode
+            if live_mode:
+                base_url = 'https://api.alpaca.markets'
+            else:
                 base_url = 'https://paper-api.alpaca.markets'
 
             if not ALPACA_AVAILABLE or tradeapi is None:
@@ -3570,6 +3579,7 @@ class TradingEngine:
         except Exception as e:
             self.status_message = f"Encrypted connection error: {str(e)}"
             return False
+
 
     def deposit_money(self, amount: float, bucket: str) -> Dict:
         """Record a manual deposit into a specific bucket."""
