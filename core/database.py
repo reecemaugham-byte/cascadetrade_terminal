@@ -68,6 +68,9 @@ class User(Base):
     # --- Tier System ---
     tier = Column(String, default="starter")
     tier_expires = Column(DateTime, nullable=True)
+    
+    # --- Trading Mode ---
+    trading_mode = Column(String, default="paper")  # "paper" or "live"
 
     # --- Subscription & Payments (Stripe) ---
     subscription_plan = Column(String, default="starter")      # starter, pro, fund, admin
@@ -155,6 +158,7 @@ def migrate_db():
             ('subscription_start', 'DATETIME'),
             ('subscription_end', 'DATETIME'),
             ('finnhub_api_key', 'VARCHAR'),
+            ('trading_mode', "VARCHAR DEFAULT 'paper'"),  # NEW: Paper/Live mode
         ]
         for col_name, col_type in new_columns:
             try:
@@ -165,10 +169,22 @@ def migrate_db():
             except Exception:
                 pass  # Column already exists
 
+        # --- TIER NAME MIGRATION ---
+        # Convert old tier names to new ones
+        try:
+            conn.execute(sqlalchemy.text("UPDATE users SET tier = 'free' WHERE tier = 'starter'"))
+            conn.execute(sqlalchemy.text("UPDATE users SET tier = 'live_trading' WHERE tier = 'pro'"))
+            conn.execute(sqlalchemy.text("UPDATE users SET tier = 'pro_trader' WHERE tier = 'fund'"))
+            conn.execute(sqlalchemy.text("UPDATE users SET subscription_plan = 'free' WHERE subscription_plan = 'starter'"))
+            conn.execute(sqlalchemy.text("UPDATE users SET subscription_plan = 'live_trading' WHERE subscription_plan = 'pro'"))
+            conn.execute(sqlalchemy.text("UPDATE users SET subscription_plan = 'pro_trader' WHERE subscription_plan = 'fund'"))
+            conn.commit()
+        except Exception:
+            pass  # Migration already ran or error
+
 
 # Run migration on import
 migrate_db()
-
 
 # ==========================================
 # HELPER FUNCTIONS
@@ -206,8 +222,9 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         profit_skim_pct=1.0,
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
-        tier="starter",
-        subscription_plan="starter",
+        tier="free",  # UPDATED from "starter"
+        trading_mode="paper",  # NEW
+        subscription_plan="free",  # UPDATED from "starter"
         subscription_status="inactive",
         is_active=True,
         created_at=datetime.datetime.utcnow(),
