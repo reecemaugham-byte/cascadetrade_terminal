@@ -1677,6 +1677,21 @@ class TradingEngine:
             # Process BUY signals
             for signal in self.signals_found:
                 if signal["signal"] == "BUY":
+                    # --- BUCKET ALLOCATION CHECK ---
+                    # Check if the user has set this bucket's allocation to 0% (disabled)
+                    bucket = signal.get("bucket", "growth")
+                    if bucket == "long_term":
+                        bucket = "dividend"  # Normalize long_term to dividend
+                    
+                    bucket_pct_key = f"{bucket}_pct"
+                    bucket_pct = self.settings.get(bucket_pct_key, 0)
+                    
+                    if bucket_pct <= 0:
+                        # User has set this bucket to 0%, skip the trade
+                        self.status_message = f"Skipping {signal['symbol']} — {bucket.title()} bucket allocation is 0%"
+                        continue
+                    # --- END BUCKET ALLOCATION CHECK ---
+
                     risk = self.evaluate_risk(signal["symbol"], signal)
                     if risk["approved"]:
                         self.place_order(
