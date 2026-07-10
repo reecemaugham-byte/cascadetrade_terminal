@@ -2460,15 +2460,25 @@ with tab3:
         st.markdown("**🌐 Global Settings**")
         st.caption("🟢 = Safe | 🟡 = Moderate | 🔴 = Risky. Hover over sliders for explanations.")
 
-        if is_locked:
-            st.warning("🔒 **Starter Plan:** Advanced risk settings (Stop Loss, Take Profit) are locked to safe defaults. **Bucket Allocations (Dividend, Growth, Penny %) are fully unlocked** so you can customize your strategy.")
+        # --- SAFE DEFAULTS OVERRIDE ---
+        use_safe_defaults = st.checkbox(
+            "🛡️ Use Safe Default Settings", 
+            value=True, 
+            help="Keep this checked to lock sliders to tested, safe defaults. Uncheck to unlock and customize your risk settings (Advanced). Changing these can significantly increase risk."
+        )
 
-        tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+        # Determine if sliders should be locked
+        is_risk_locked = use_safe_defaults
+        
+        if is_risk_locked:
+            st.info("🔒 **Safe Mode Active:** Risk settings are locked to tested defaults. Uncheck the box above to unlock.")
+        else:
+            st.warning("⚠️ **Advanced Risk Mode:** Settings are unlocked. Adjusting these beyond safe defaults can result in rapid losses or being stopped out frequently. Use at your own risk.")
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             max_pos_limit = tier_limits.get("max_positions", 10)
-            max_pos = st.slider("📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.", disabled=is_locked)
+            max_pos = st.slider("📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.", disabled=is_risk_locked)
             engine.settings["max_positions"] = max_pos
             if max_pos > 20:
                 st.error("🔴 **Risk:** More than 20 positions increases exposure & margin risk significantly.")
@@ -2477,7 +2487,7 @@ with tab3:
             else:
                 st.success("🟢 **Safe:** Holding 10 or fewer positions.")
 
-            max_pos_pct = st.slider("💰 Max Position %", 2, 25, int(engine.settings["max_position_pct"] * 100), step=1, format="%d%%", help="Max % of your total portfolio value put into a single stock. 8% is safe.", disabled=is_locked)
+            max_pos_pct = st.slider("💰 Max Position %", 2, 25, int(engine.settings["max_position_pct"] * 100), step=1, format="%d%%", help="Max % of your total portfolio value put into a single stock. 8% is safe.", disabled=is_risk_locked)
             engine.settings["max_position_pct"] = max_pos_pct / 100
             if max_pos_pct > 15:
                 st.error("🔴 **Risk:** Concentrated positions (>15%) can cause large losses if the stock drops.")
@@ -2486,7 +2496,7 @@ with tab3:
             else:
                 st.success("🟢 **Safe:** Positions 8% or less protect your capital.")
 
-            daily_loss = st.slider("🛑 Daily Loss Limit %", 1, 10, int(engine.settings["daily_loss_limit_pct"] * 100), step=1, format="%d%%", help="Stops trading for the day if your daily losses exceed this %. 3% is recommended.", disabled=is_locked)
+            daily_loss = st.slider("🛑 Daily Loss Limit %", 1, 10, int(engine.settings["daily_loss_limit_pct"] * 100), step=1, format="%d%%", help="Stops trading for the day if your daily losses exceed this %. 3% is recommended.", disabled=is_risk_locked)
             engine.settings["daily_loss_limit_pct"] = daily_loss / 100
             if daily_loss > 5:
                 st.error("🔴 **Risk:** Higher loss limits (>5%) risk larger drawdowns and can wipe out weeks of gains.")
@@ -2496,7 +2506,7 @@ with tab3:
                 st.success("🟢 **Safe:** A 3% daily loss limit protects your capital.")
 
         with col_g2:
-            stop_loss = st.slider("🛡️ Stop Loss %", 1, 20, int(engine.settings["stop_loss_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock if it drops this %. Tight stops (<3%) get triggered by normal volatility.", disabled=is_locked)
+            stop_loss = st.slider("🛡️ Stop Loss %", 1, 20, int(engine.settings["stop_loss_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock if it drops this %. Tight stops (<3%) get triggered by normal volatility.", disabled=is_risk_locked)
             engine.settings["stop_loss_pct"] = stop_loss / 100
             if stop_loss < 3:
                 st.error("🔴 **Risk:** Tight stops (<3%) get triggered by normal market volatility, causing frequent stop-outs.")
@@ -2505,7 +2515,7 @@ with tab3:
             else:
                 st.success("🟢 **Safe:** 5%+ stops give stocks room to breathe.")
 
-            take_profit = st.slider("🎯 Take Profit %", 5, 50, int(engine.settings["take_profit_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock when it reaches this % profit. Higher targets may never be reached.", disabled=is_locked)
+            take_profit = st.slider("🎯 Take Profit %", 5, 50, int(engine.settings["take_profit_pct"] * 100), step=1, format="%d%%", help="Auto-sells a stock when it reaches this % profit. Higher targets may never be reached.", disabled=is_risk_locked)
             engine.settings["take_profit_pct"] = take_profit / 100
             if take_profit > 20:
                 st.error("🔴 **Risk:** Very high targets (>20%) may never be reached, causing you to hold losers longer.")
@@ -2514,7 +2524,7 @@ with tab3:
             else:
                 st.success("🟢 **Safe:** 10% targets lock in profits reliably.")
 
-            min_conf = st.slider("🎯 Min Confidence", 0.05, 0.95, engine.settings["min_confidence"], step=0.05, format="%.2f", help="Minimum signal confidence required to buy. Lower % = more trades, but more false signals.", disabled=is_locked)
+            min_conf = st.slider("🎯 Min Confidence", 0.05, 0.95, engine.settings["min_confidence"], step=0.05, format="%.2f", help="Minimum signal confidence required to buy. Lower % = more trades, but more false signals.", disabled=is_risk_locked)
             engine.settings["min_confidence"] = min_conf
             if min_conf < 0.15:
                 st.error("🔴 **Risk:** Lower than 15% confidence means buying on very weak signals (essentially guessing).")
@@ -2526,9 +2536,9 @@ with tab3:
         st.markdown("---")
         col_r1, col_r2, col_r3 = st.columns(3)
         with col_r1:
-            engine.settings["max_same_sector"] = st.slider("🏢 Max Same Sector", 1, 5, engine.settings.get("max_same_sector", 3), help="Limits how many stocks from the same industry you can hold.", disabled=is_locked)
+            engine.settings["max_same_sector"] = st.slider("🏢 Max Same Sector", 1, 5, engine.settings.get("max_same_sector", 3), help="Limits how many stocks from the same industry you can hold.", disabled=is_risk_locked)
         with col_r2:
-            min_rvol = st.slider("💥 Min RVOL", 0.0, 5.0, engine.settings.get("min_rvol", 1.5), step=0.1, format="%.1f", help="Minimum volume spike required for a buy signal. Lower = more trades, but less reliable.", disabled=is_locked)
+            min_rvol = st.slider("💥 Min RVOL", 0.0, 5.0, engine.settings.get("min_rvol", 1.5), step=0.1, format="%.1f", help="Minimum volume spike required for a buy signal. Lower = more trades, but less reliable.", disabled=is_risk_locked)
             engine.settings["min_rvol"] = min_rvol
             if min_rvol < 1.0:
                 st.error("🔴 Low volume signals are unreliable.")
@@ -2537,7 +2547,7 @@ with tab3:
             else:
                 st.success("🟢 Strong volume backing.")
         with col_r3:
-            scan_interval = st.slider("⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans. Lower = faster but uses more API calls.", disabled=is_locked)
+            scan_interval = st.slider("⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans. Lower = faster but uses more API calls.", disabled=is_risk_locked)
             engine.settings["scan_interval_min"] = scan_interval
 
         st.markdown("---")
