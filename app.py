@@ -582,50 +582,53 @@ with st.sidebar:
         st.markdown("---")
 
         with st.container(border=True):
-            st.markdown("🆓 **Starter — Free**")
+            st.markdown("🆓 **Free (Paper) — £0/m**")
             st.caption("Paper trading • Basic signals • 3-Bucket system")
             st.markdown("""
             <small>
-            ✅ Paper Trading &nbsp; ✅ Basic Signals &nbsp; ✅ 3-Bucket System<br>
-            🔒 Advanced Signals &nbsp; 🔒 OpenAI Sentiment &nbsp; 🔒 Live Trading<br>
-            🔒 DRIP Calculator &nbsp; 🔒 Profit Skimming
+            ✅ Paper Trading &nbsp; ✅ Basic Signals &nbsp; ✅ Stop Losses & Take Profits<br>
+            🔒 VIX Filter &nbsp; 🔒 Trailing Stops &nbsp; 🔒 ATR Position Sizing<br>
+            🔒 Profit Skimming &nbsp; 🔒 Dividend Tracking &nbsp; 🔒 Live Trading<br>
+            🔒 Advanced Signals &nbsp; 🔒 AI Sentiment &nbsp; 🔒 DRIP Calculator
             </small>
             """, unsafe_allow_html=True)
 
         with st.container(border=True):
-            st.markdown("⚡ **Pro — £29/m**")
-            st.caption("Advanced signals • AI sentiment • Live trading")
+            st.markdown("⚡ **Live Trading — £19.99/m**")
+            st.caption("Live trading • VIX filter • Profit skimming • Dividends")
             st.markdown("""
             <small>
-            ✅ Everything in Starter &nbsp; ✅ Advanced Signals &nbsp; ✅ OpenAI Sentiment<br>
-            ✅ Live Trading &nbsp; ✅ DRIP Calculator &nbsp; ✅ Profit Skimming<br>
-            🔒 Multiple Accounts
+            ✅ Everything in Free &nbsp; ✅ Live Trading &nbsp; ✅ VIX Fear Filter<br>
+            ✅ Trailing Stops &nbsp; ✅ ATR Position Sizing &nbsp; ✅ Profit Skimming<br>
+            ✅ Dividend Tracking &nbsp; ✅ Full Discord Alerts<br>
+            🔒 Advanced Signals &nbsp; 🔒 AI Sentiment &nbsp; 🔒 DRIP Calculator
             </small>
             """, unsafe_allow_html=True)
-            if current_plan != "pro":
-                pro_link = get_payment_link("pro", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
-                if pro_link and "your_pro_link" not in pro_link:
-                    st.link_button("⚡ Upgrade to Pro", pro_link, use_container_width=True)
+            if current_plan not in ("live_trading", "pro_trader", "admin"):
+                live_link = get_payment_link("live_trading", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
+                if live_link and "your_live_link" not in live_link:
+                    st.link_button("⚡ Upgrade to Live Trading", live_link, use_container_width=True)
                 else:
-                    st.button("⚡ Upgrade to Pro", use_container_width=True, disabled=True, key="sidebar_pro_btn")
+                    st.button("⚡ Upgrade to Live Trading", use_container_width=True, disabled=True, key="sidebar_live_btn")
             else:
-                st.success("✅ Current plan")
+                st.success("✅ Current plan or higher")
 
         with st.container(border=True):
-            st.markdown("💎 **Fund — £99/m**")
-            st.caption("Multi-account • Auto-rebalancing • Weekly reports")
+            st.markdown("💎 **Pro Trader — £49.99/m**")
+            st.caption("Advanced signals • AI sentiment • DRIP • Diamond metrics")
             st.markdown("""
             <small>
-            ✅ Everything in Pro &nbsp; ✅ Multiple Accounts &nbsp; ✅ Auto-Rebalancing<br>
-            ✅ Weekly Reports &nbsp; ✅ Priority Support
+            ✅ Everything in Live Trading &nbsp; ✅ Advanced Signals (MACD, Bollinger)<br>
+            ✅ AI News Sentiment &nbsp; ✅ DRIP Calculator &nbsp; ✅ Diamond Metrics<br>
+            ✅ Multiple Accounts &nbsp; ✅ Profit Alerts &nbsp; ✅ Priority Support
             </small>
             """, unsafe_allow_html=True)
-            if current_plan != "fund":
-                fund_link = get_payment_link("fund", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
-                if fund_link and "your_fund_link" not in fund_link:
-                    st.link_button("💎 Upgrade to Fund", fund_link, use_container_width=True)
+            if current_plan not in ("pro_trader", "admin"):
+                pro_link = get_payment_link("pro_trader", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
+                if pro_link and "your_pro_link" not in pro_link:
+                    st.link_button("💎 Upgrade to Pro Trader", pro_link, use_container_width=True)
                 else:
-                    st.button("💎 Upgrade to Fund", use_container_width=True, disabled=True, key="sidebar_fund_btn")
+                    st.button("💎 Upgrade to Pro Trader", use_container_width=True, disabled=True, key="sidebar_pro_btn")
             else:
                 st.success("✅ Current plan")
 
@@ -787,6 +790,62 @@ Rules:
         st.caption("🔔 Free key from finnhub.io. Required for IPO alerts. Stored per-user in the database.")
 
         st.markdown("---")
+        st.markdown("##### 🔌 Trading Mode")
+        current_trading_mode = getattr(current_user, 'trading_mode', 'paper') or 'paper'
+        can_trade_live = has_feature(st.session_state.username, "live_trading") if TIERS_AVAILABLE else False
+        
+        if not can_trade_live:
+            st.selectbox("Trading Mode", ["Paper Trading"], index=0, disabled=True, help="Live Trading requires the Live Trading tier (£19.99/m) or above.")
+            st.caption("🔒 **Live Trading** requires the Live Trading tier or Pro Trader tier. Upgrade to trade with real money.")
+        else:
+            mode_options = ["Paper Trading", "Live Trading"]
+            current_mode_index = 0 if current_trading_mode == "paper" else 1
+            
+            # Initialize confirmation state
+            if "confirm_live_mode" not in st.session_state:
+                st.session_state.confirm_live_mode = False
+            
+            selected_mode = st.selectbox("Trading Mode", mode_options, index=current_mode_index, key="trading_mode_select")
+            
+            # Handle switching TO Live
+            if selected_mode == "Live Trading" and current_trading_mode != "live" and not st.session_state.confirm_live_mode:
+                st.warning("⚠️ **WARNING:** You are about to switch to Live Trading with **REAL MONEY**. All orders will execute on the live market and you can lose real funds.")
+                col_confirm_live1, col_confirm_live2 = st.columns(2)
+                with col_confirm_live1:
+                    if st.button("✅ Yes, Switch to Live", key="confirm_live_yes_btn"):
+                        st.session_state.confirm_live_mode = True
+                        st.rerun()
+                with col_confirm_live2:
+                    if st.button("❌ Cancel", key="confirm_live_no_btn"):
+                        st.rerun()
+                st.stop() # Stop execution until they confirm
+                
+            # Handle switching BACK to Paper
+            elif selected_mode == "Paper Trading" and current_trading_mode == "live":
+                db_mode = SessionLocal()
+                user_mode = db_mode.query(User).filter(User.username == st.session_state.username).first()
+                if user_mode:
+                    user_mode.trading_mode = "paper"
+                    db_mode.commit()
+                db_mode.close()
+                st.session_state.trading_engine.connected = False # Force reconnect
+                st.success("Switched back to Paper Trading mode. Click Connect to apply.")
+                st.rerun()
+
+            # If they confirmed Live mode
+            if st.session_state.confirm_live_mode and selected_mode == "Live Trading":
+                st.session_state.confirm_live_mode = False # Reset
+                db_mode = SessionLocal()
+                user_mode = db_mode.query(User).filter(User.username == st.session_state.username).first()
+                if user_mode:
+                    user_mode.trading_mode = "live"
+                    db_mode.commit()
+                db_mode.close()
+                st.session_state.trading_engine.connected = False # Force reconnect
+                st.error("🔴 **LIVE MODE ACTIVATED.** You are now trading with real money. Click Connect to apply.")
+                st.rerun()
+
+        st.markdown("---")
         st.markdown("##### 🔒 Privacy Mode")
         privacy_mode = st.checkbox("Privacy Mode (Discord shows % only, no $)", value=engine.settings.get("discord_privacy_mode", True), key="privacy_mode_input")
         engine.settings["discord_privacy_mode"] = privacy_mode
@@ -848,6 +907,16 @@ Rules:
 # 4b. MAIN LAYOUT (4 Tabs)
 # ==========================================
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔬 Scanner", "🤖 Auto Trade", "📚 Academy"])
+
+# --- TRADING MODE BANNER ---
+db_banner = SessionLocal()
+current_user_banner = db_banner.query(User).filter(User.username == st.session_state.username).first()
+if current_user_banner:
+    if getattr(current_user_banner, 'trading_mode', 'paper') == 'live':
+        st.error("🔴 **LIVE TRADING MODE ACTIVE** — You are trading with **REAL MONEY**. All orders will execute on the live market.")
+    else:
+        st.info("🟢 **PAPER TRADING MODE** — Using simulated funds. No real money is at risk.")
+db_banner.close()
 
 # ==========================================
 # TAB 1: 📊 DASHBOARD (Compact Layout)
@@ -2025,21 +2094,22 @@ with tab3:
                 current_user = db.query(User).filter(User.username == st.session_state.username).first()
                 api_key = current_user.alpaca_api_key if current_user else ""
                 secret_key = current_user.alpaca_secret_key if current_user else ""
+                trading_mode = getattr(current_user, 'trading_mode', 'paper') or 'paper'
                 db.close()
                 if not api_key or not secret_key:
                     st.error("Please enter your Alpaca API keys in the Settings sidebar.")
                 else:
-                    with st.spinner("Connecting to Alpaca..."):
-                        try:
-                            import alpaca_trade_api as tradeapi
-                            alpaca_api = tradeapi.REST(api_key, secret_key, base_url='https://paper-api.alpaca.markets', api_version='v2')
-                            success = engine.connect(alpaca_api)
-                            if success:
-                                st.success("Connected to Alpaca Paper Trading!")
+                    is_live = trading_mode == "live"
+                    mode_text = "LIVE" if is_live else "Paper"
+                    with st.spinner(f"Connecting to Alpaca ({mode_text} Trading)..."):
+                        success = engine.connect_encrypted(api_key, secret_key, live_mode=is_live)
+                        if success:
+                            if is_live:
+                                st.success("Connected to Alpaca LIVE Trading!")
                             else:
-                                st.error(f"Connection failed: {engine.status_message}")
-                        except Exception as e:
-                            st.error(f"Error initializing Alpaca: {e}")
+                                st.success("Connected to Alpaca Paper Trading!")
+                        else:
+                            st.error(f"Connection failed: {engine.status_message}")
                 st.rerun()
 
         with col_btn2:
