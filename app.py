@@ -2461,7 +2461,7 @@ with tab3:
         st.caption("🟢 = Safe | 🟡 = Moderate | 🔴 = Risky. Hover over sliders for explanations.")
 
         if is_locked:
-            st.warning("🔒 **Starter Plan:** Risk settings are locked to safe defaults. Upgrade to Pro to unlock advanced risk controls.")
+            st.warning("🔒 **Starter Plan:** Advanced risk settings (Stop Loss, Take Profit) are locked to safe defaults. **Bucket Allocations (Dividend, Growth, Penny %) are fully unlocked** so you can customize your strategy.")
 
         tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
 
@@ -2545,6 +2545,7 @@ with tab3:
         with st.expander("🔴 Penny Stock Settings", expanded=False):
             penny_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("penny_pct", 0.30) * 100), step=1, format="%d%%", key="penny_alloc_slider", help="What percentage of your capital goes to penny stocks. Set to 0% to disable penny trading.")
             engine.settings["penny_pct"] = penny_alloc / 100
+            engine.save_settings() # <-- ADDED: Instant save on allocation change
 
             st.caption("Higher risk, tighter stops, faster profits. Stocks under ${:.0f}.".format(engine.settings.get("penny_price_threshold", 5.0)))
             penny = engine.settings.get("penny_settings", {})
@@ -2572,6 +2573,7 @@ with tab3:
         with st.expander("🔵 Growth Stock Settings", expanded=False):
             growth_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("growth_pct", 0.35) * 100), step=1, format="%d%%", key="growth_alloc_slider", help="What percentage of your capital goes to growth stocks. Set to 0% to disable growth trading.")
             engine.settings["growth_pct"] = growth_alloc / 100
+            engine.save_settings() # <-- ADDED: Instant save on allocation change
 
             st.caption("Medium risk, balanced stops and targets. Most large-cap stocks.")
             growth = engine.settings.get("growth_settings", {})
@@ -2598,6 +2600,7 @@ with tab3:
         with st.expander("🟢 Dividend Stock Settings", expanded=False):
             dividend_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("dividend_pct", 0.35) * 100), step=1, format="%d%%", key="dividend_alloc_slider", help="What percentage of your capital goes to dividend stocks. Set to 0% to disable dividend trading.")
             engine.settings["dividend_pct"] = dividend_alloc / 100
+            engine.save_settings() # <-- ADDED: Instant save on allocation change
 
             st.caption("Lower risk, wider stops, longer holds. Dividend-paying stocks.")
             dividend = engine.settings.get("dividend_settings", {})
