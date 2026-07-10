@@ -1,6 +1,6 @@
 """
 core/tiers.py
-CascadeTrade Terminal — Tier Feature Definitions & Access Control
+Roleigh QuanTrader — Tier Feature Definitions & Access Control
 
 Defines what each tier can access and provides helper functions
 to check feature availability for any user.
@@ -11,69 +11,71 @@ to check feature availability for any user.
 # ============================================================
 
 TIER_FEATURES = {
-    "starter": {
-        "name": "Starter",
-        "price": "Free",
+    "free": {
+        "name": "Free (Paper)",
+        "price": "£0/month",
         "paper_trading": True,
+        "live_trading": False,
         "basic_signals": True,
+        "stop_losses": True,
+        "vix_filter": False,
+        "trailing_stops": False,
+        "atr_position_sizing": False,
+        "profit_skimming": False,
+        "dividend_tracking": False,
         "advanced_signals": False,
         "ai_sentiment": False,
-        "multi_timeframe": False,
-        "live_trading": False,
         "drip_calculator": False,
         "diamond_metrics": False,
-        "auto_profit_extraction": False,
-        "backtesting": True,
-        "discord_alerts": True,
-        "dividend_calendar": True,
-        "trade_journal": True,
-        "ipo_scanner": False,
+        "multiple_accounts": False,
         "max_positions": 10,
         "scan_interval_min": 5,
-        "max_watchlist": 50,
+        "max_watchlist": 25,
+        "discord_alerts": "basic",
     },
-    "pro": {
-        "name": "Roleigh QuanTrader Pro",
-        "price": "$29/month",
+    "live_trading": {
+        "name": "Live Trading",
+        "price": "£19.99/month",
         "paper_trading": True,
-        "basic_signals": True,
-        "advanced_signals": True,
-        "ai_sentiment": True,
-        "multi_timeframe": True,
         "live_trading": True,
-        "drip_calculator": True,
-        "diamond_metrics": True,
-        "auto_profit_extraction": True,
-        "backtesting": True,
-        "discord_alerts": True,
-        "dividend_calendar": True,
-        "trade_journal": True,
-        "ipo_scanner": True,
+        "basic_signals": True,
+        "stop_losses": True,
+        "vix_filter": True,
+        "trailing_stops": True,
+        "atr_position_sizing": True,
+        "profit_skimming": True,
+        "dividend_tracking": True,
+        "advanced_signals": False,
+        "ai_sentiment": False,
+        "drip_calculator": False,
+        "diamond_metrics": False,
+        "multiple_accounts": False,
         "max_positions": 20,
-        "scan_interval_min": 1,
-        "max_watchlist": 200,
+        "scan_interval_min": 3,
+        "max_watchlist": 100,
+        "discord_alerts": "full",
     },
-    "fund": {
-        "name": "Roleigh QuanTrader Fund",
-        "price": "$99/month",
+    "pro_trader": {
+        "name": "Pro Trader",
+        "price": "£49.99/month",
         "paper_trading": True,
+        "live_trading": True,
         "basic_signals": True,
+        "stop_losses": True,
+        "vix_filter": True,
+        "trailing_stops": True,
+        "atr_position_sizing": True,
+        "profit_skimming": True,
+        "dividend_tracking": True,
         "advanced_signals": True,
         "ai_sentiment": True,
-        "multi_timeframe": True,
-        "live_trading": True,
         "drip_calculator": True,
         "diamond_metrics": True,
-        "auto_profit_extraction": True,
-        "backtesting": True,
-        "discord_alerts": True,
-        "dividend_calendar": True,
-        "trade_journal": True,
-        "ipo_scanner": True,
+        "multiple_accounts": True,
         "max_positions": 50,
         "scan_interval_min": 1,
-        "max_watchlist": 500,
-        "multiple_accounts": True,
+        "max_watchlist": 9999,  # Unlimited
+        "discord_alerts": "full_profit",
         "auto_rebalancing": True,
         "weekly_reports": True,
         "priority_support": True,
@@ -82,26 +84,23 @@ TIER_FEATURES = {
         "name": "Roleigh QuanTrader Admin",
         "price": "Internal",
         "paper_trading": True,
+        "live_trading": True,
         "basic_signals": True,
+        "stop_losses": True,
+        "vix_filter": True,
+        "trailing_stops": True,
+        "atr_position_sizing": True,
+        "profit_skimming": True,
+        "dividend_tracking": True,
         "advanced_signals": True,
         "ai_sentiment": True,
-        "multi_timeframe": True,
-        "live_trading": True,
         "drip_calculator": True,
         "diamond_metrics": True,
-        "auto_profit_extraction": True,
-        "backtesting": True,
-        "discord_alerts": True,
-        "dividend_calendar": True,
-        "trade_journal": True,
-        "ipo_scanner": True,
+        "multiple_accounts": True,
         "max_positions": 999,
         "scan_interval_min": 1,
         "max_watchlist": 999,
-        "multiple_accounts": True,
-        "auto_rebalancing": True,
-        "weekly_reports": True,
-        "priority_support": True,
+        "discord_alerts": "full_profit",
         "admin_panel": True,
         "can_change_tiers": True,
     },
@@ -112,19 +111,19 @@ TIER_FEATURES = {
 # ============================================================
 
 TIER_DISPLAY = {
-    "starter": {
+    "free": {
         "icon": "🆓",
-        "label": "Starter (Free)",
+        "label": "Free (Paper)",
         "color": "#a0a0a0",
     },
-    "pro": {
+    "live_trading": {
         "icon": "⚡",
-        "label": "Roleigh QuanTrader Pro",
+        "label": "Live Trading",
         "color": "#00d4aa",
     },
-    "fund": {
+    "pro_trader": {
         "icon": "💎",
-        "label": "Roleigh QuanTrader Fund",
+        "label": "Pro Trader",
         "color": "#ffd700",
     },
     "admin": {
@@ -141,10 +140,9 @@ TIER_DISPLAY = {
 
 def get_user_tier(username: str) -> str:
     """Get the effective tier for a user.
-
     Delegates to database.get_user_tier() which checks both the
     legacy tier column and Stripe subscription status/expiry.
-    Returns 'starter' on any error or if not set.
+    Returns 'free' on any error or if not set.
     """
     try:
         from core.database import SessionLocal, get_user_tier as db_get_user_tier
@@ -156,31 +154,30 @@ def get_user_tier(username: str) -> str:
             db.close()
     except Exception:
         pass
-    return "starter"
+    return "free"
 
 
 def has_feature(username: str, feature: str) -> bool:
     """Check if a user has access to a specific feature."""
     tier = get_user_tier(username)
-    features = TIER_FEATURES.get(tier, TIER_FEATURES["starter"])
+    features = TIER_FEATURES.get(tier, TIER_FEATURES["free"])
     return features.get(feature, False)
 
 
 def get_tier_limits(username: str) -> dict:
     """Get the limits for a user's tier (max_positions, scan_interval, etc.)."""
     tier = get_user_tier(username)
-    return TIER_FEATURES.get(tier, TIER_FEATURES["starter"])
+    return TIER_FEATURES.get(tier, TIER_FEATURES["free"])
 
 
 def get_tier_display(username: str) -> dict:
     """Get the display info for a user's tier (icon, label, color)."""
     tier = get_user_tier(username)
-    return TIER_DISPLAY.get(tier, TIER_DISPLAY["starter"])
+    return TIER_DISPLAY.get(tier, TIER_DISPLAY["free"])
 
 
 def set_user_tier(username: str, tier: str) -> bool:
     """Set a user's tier. Used by admin panel or payment webhook.
-
     Delegates to database.set_user_tier() which also handles
     subscription field syncing when appropriate.
     """
@@ -215,14 +212,16 @@ def get_all_users():
 def get_upgrade_message(feature: str) -> str:
     """Get an upgrade prompt message for a locked feature."""
     messages = {
-        "advanced_signals": "🔬 Advanced Signals (Bollinger, MA Cross, VIX Filter)",
-        "ai_sentiment": "🤖 AI News Sentiment (OpenAI)",
-        "multi_timeframe": "🔭 Multi-Timeframe Confirmation",
         "live_trading": "💸 Live Trading with Real Money",
+        "vix_filter": "🛡️ VIX Fear Filter",
+        "trailing_stops": "📈 Trailing Stops",
+        "atr_position_sizing": "📐 ATR Position Sizing",
+        "profit_skimming": "⚡ Profit Skimming",
+        "dividend_tracking": "💎 Dividend Tracking & Capture",
+        "advanced_signals": "🔬 Advanced Signals (Bollinger, MA Cross)",
+        "ai_sentiment": "🤖 AI News Sentiment (OpenAI)",
         "drip_calculator": "🔄 DRIP Calculator",
         "diamond_metrics": "💎 Diamond Metrics (Sortino, Calmar, Omega)",
-        "auto_profit_extraction": "⚡ Auto Profit Extraction",
-        "ipo_scanner": "🔍 IPO & New Listings Scanner",
         "multiple_accounts": "👥 Multiple Accounts",
         "auto_rebalancing": "⚖️ Auto-Rebalancing",
         "weekly_reports": "📊 Weekly Reports",
