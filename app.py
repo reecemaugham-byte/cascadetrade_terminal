@@ -618,11 +618,8 @@ with st.sidebar:
             </small>
             """, unsafe_allow_html=True)
             if current_plan not in ("live_trading", "pro_trader", "admin"):
-                live_link = get_payment_link("live_trading", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
-                if live_link and "your_live_link" not in live_link:
-                    st.link_button("⚡ Upgrade to Live Trading", live_link, use_container_width=True)
-                else:
-                    st.button("⚡ Upgrade to Live Trading", use_container_width=True, disabled=True, key="sidebar_live_btn")
+                # Use your direct Stripe link for testing
+                st.link_button("⚡ Upgrade to Live Trading", "https://buy.stripe.com/test_28E7sE3uy1Wt4HWgyJcbC02", use_container_width=True)
             else:
                 st.success("✅ Current plan or higher")
 
@@ -637,13 +634,11 @@ with st.sidebar:
             </small>
             """, unsafe_allow_html=True)
             if current_plan not in ("pro_trader", "admin"):
-                pro_link = get_payment_link("pro_trader", username=st.session_state.username) if PAYMENTS_AVAILABLE else "#"
-                if pro_link and "your_pro_link" not in pro_link:
-                    st.link_button("💎 Upgrade to Pro Trader", pro_link, use_container_width=True)
-                else:
-                    st.button("💎 Upgrade to Pro Trader", use_container_width=True, disabled=True, key="sidebar_pro_btn")
+                # Use your direct Stripe link for testing
+                st.link_button("💎 Upgrade to Pro Trader", "https://buy.stripe.com/test_fZubIU0im7gN0rGdmxcbC03", use_container_width=True)
             else:
-                st.success("✅ Current plan")
+                st.success("✅ Current plan or higher")
+
 
         st.markdown("---")
         st.markdown("##### 🔍 Subscription Status")
