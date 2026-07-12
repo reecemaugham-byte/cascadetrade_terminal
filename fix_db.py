@@ -42,4 +42,25 @@ with engine.connect() as conn:
     except Exception as e:
         print(f"Error updating tiers: {e}")
 
+    print("Adding bot_running and bot_status columns...")
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN bot_running BOOLEAN DEFAULT FALSE"))
+        conn.commit()
+        print("✅ bot_running column added successfully!")
+    except Exception as e:
+        if "already exists" in str(e):
+            print("✅ bot_running column already exists.")
+        else:
+            print(f"Error adding bot_running column: {e}")
+
+    try:
+        conn.execute(text("ALTER TABLE users ADD COLUMN bot_status VARCHAR DEFAULT 'Stopped'"))
+        conn.commit()
+        print("✅ bot_status column added successfully!")
+    except Exception as e:
+        if "already exists" in str(e):
+            print("✅ bot_status column already exists.")
+        else:
+            print(f"Error adding bot_status column: {e}")
+
 print("Database fix complete! You can close this console.")
