@@ -9,7 +9,7 @@ import datetime
 import traceback
 from core.database import SessionLocal, User
 from trading_engine import TradingEngine
-from core.encryption import decrypt_value, is_encrypted
+from utils import safe_decrypt
 
 # Keep track of active engines in memory so we don't reconnect every cycle
 active_engines = {}
@@ -30,13 +30,9 @@ def get_or_create_engine(user):
 def connect_engine(engine, user):
     """Decrypt the user's Alpaca keys and connect the engine."""
     # Decrypt keys
-    api_key = user.alpaca_api_key
-    secret_key = user.alpaca_secret_key
-    
-    if is_encrypted(api_key):
-        api_key = decrypt_value(api_key)
-    if is_encrypted(secret_key):
-        secret_key = decrypt_value(secret_key)
+    # Decrypt keys using the app's safe fallback method
+    api_key = safe_decrypt(user.alpaca_api_key)
+    secret_key = safe_decrypt(user.alpaca_secret_key)
         
     if not api_key or not secret_key:
         return False, "Missing Alpaca API keys"
