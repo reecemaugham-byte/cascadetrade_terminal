@@ -71,6 +71,8 @@ class User(Base):
     
     # --- Trading Mode ---
     trading_mode = Column(String, default="paper")  # "paper" or "live"
+    bot_running = Column(Boolean, default=False)  # 24/7 Worker control
+    bot_status = Column(String, default="Stopped")  # Worker status message
 
     # --- Subscription & Payments (Stripe) ---
     subscription_plan = Column(String, default="starter")      # starter, pro, fund, admin
