@@ -56,9 +56,10 @@ def run_worker():
         try:
             # 1. Find all users who have clicked "Start Bot"
             active_users = db.query(User).filter(User.bot_running == True).all()
-            
+
             if not active_users:
-                # No one is trading, just wait
+                # Heartbeat so you know the worker is alive
+                print(f"[{datetime.datetime.now()}] 💤 No active bots. Waiting...", end="\r")
                 time.sleep(10)
                 continue
                 
