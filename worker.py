@@ -71,21 +71,28 @@ def run_worker():
                 try:
                     engine = get_or_create_engine(user)
                     
+                    # DEBUG: Print connection status
+                    print(f"[{datetime.datetime.now()}] 🔍 {username}: engine.connected = {engine.connected}")
+                    
                     # Connect if not connected
                     if not engine.connected:
+                        print(f"[{datetime.datetime.now()}] 🔌 {username}: Connecting to Alpaca...")
                         success, msg = connect_engine(engine, user)
                         if not success:
                             print(f"❌ {username}: Connection failed - {msg}")
                             user.bot_status = f"Error: {msg[:50]}"
                             db.commit()
                             continue
+                        print(f"[{datetime.datetime.now()}] ✅ {username}: {msg}")
                     
                     # Run one trading cycle
+                    print(f"[{datetime.datetime.now()}] 🔄 {username}: Running cycle...")
                     engine.run_cycle()
                     
                     # Update status in DB so Streamlit can see it
                     user.bot_status = f"Running - Cycle {engine.cycle_count}"
                     db.commit()
+                    print(f"[{datetime.datetime.now()}] ✅ {username}: Cycle {engine.cycle_count} complete")
                     
                 except Exception as e:
                     print(f"❌ {username}: Cycle error - {str(e)}")
