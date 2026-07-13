@@ -8,6 +8,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import time
 import stripe
+import json
 # --- FORCE DATABASE MIGRATION FOR v2.0 ---
 import sqlalchemy
 from core.database import engine
@@ -16,13 +17,41 @@ try:
         conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_mode VARCHAR DEFAULT 'paper'"))
         conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_running BOOLEAN DEFAULT FALSE"))
         conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_status VARCHAR DEFAULT 'Stopped'"))
+        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS settings_json TEXT"))
         conn.execute(sqlalchemy.text("UPDATE users SET tier = 'free' WHERE tier = 'starter'"))
         conn.execute(sqlalchemy.text("UPDATE users SET tier = 'live_trading' WHERE tier = 'pro'"))
         conn.execute(sqlalchemy.text("UPDATE users SET tier = 'pro_trader' WHERE tier = 'fund'"))
         conn.commit()
 except Exception:
-    pass # Ignore if columns already exist
+    pass
 # --- END FORCE MIGRATION ---
+
+# ==========================================
+# SETTINGS PERSISTENCE (Save/Load from DB)
+# ==========================================
+def save_settings_to_db(username, settings_dict):
+    try:
+        db = SessionLocal()
+        user = db.query(User).filter(User.username == username).first()
+        if user:
+            user.settings_json = json.dumps(settings_dict)
+            db.commit()
+        db.close()
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+
+def load_settings_from_db(username, engine):
+    try:
+        db = SessionLocal()
+        user = db.query(User).filter(User.username == username).first()
+        if user and hasattr(user, 'settings_json') and user.settings_json:
+            saved = json.loads(user.settings_json)
+            for key, value in saved.items():
+                engine.settings[key] = value
+            engine.save_settings()
+        db.close()
+    except Exception as e:
+        print(f"Error loading settings: {e}")
 
 # ==========================================
 # SET DEFAULTS
@@ -175,7 +204,8 @@ from trading_engine import (
 from core.database import (
     SessionLocal, User, Trade, authenticate_user, create_user,
     record_dividend, get_dividend_history,
-    save_trade_to_db, load_trades_from_db, clear_trades_from_db
+    save_trade_to_db, load_trades_from_db, clear_trades_from_db,
+    load_settings_from_db, save_settings_to_db
 )
 
 from core.terms import TERMS_OF_SERVICE, RISK_DISCLAIMER, PRIVACY_POLICY
@@ -377,6 +407,8 @@ if not st.session_state.authenticated:
                     st.session_state.username = _username
                     st.session_state.trading_engine.set_username(_username)
                     st.session_state.trading_engine._load_trade_log()
+                    load_settings_from_db(_username, st.session_state.trading_engine)
+
 
                     if AUDIT_AVAILABLE:
                         try:
@@ -1926,6 +1958,7 @@ with tab2:
                             watchlist.append(symbol)
                             engine.settings["watchlist"] = watchlist
                             engine.save_settings()
+                            save_settings_to_db(st.session_state.username, engine.settings)
                             st.success(f"Added {symbol} to watchlist!")
         else:
             st.info("No new listings detected. Click 'Scan for New Alpaca Listings' above to check.")
@@ -2446,6 +2479,7 @@ with tab3:
             engine.settings["discord_profit_alerts"] = profit_alerts
             engine.settings["auto_extract_profits"] = auto_extract
             engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
 
             if st.button("⚡ Extract Profits Now", type="primary", use_container_width=True):
                 with st.spinner("Extracting profits..."):
@@ -2542,9 +2576,13 @@ with tab3:
 
     # --- SUB-TAB 3: SETTINGS ---
     with auto_sub3:
+        # Load tier limits once for this entire tab
+        tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
+
         st.markdown("##### ⚙️ Trading Settings (Risk Management)")
         if st.button("🔒 Reset to Safe Defaults", type="primary"):
             engine.reset_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
             st.success("Settings reset to safe defaults!")
             st.rerun()
 
@@ -2647,7 +2685,8 @@ with tab3:
         with st.expander("🔴 Penny Stock Settings", expanded=False):
             penny_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("penny_pct", 0.30) * 100), step=1, format="%d%%", key="penny_alloc_slider", help="What percentage of your capital goes to penny stocks. Set to 0% to disable penny trading.")
             engine.settings["penny_pct"] = penny_alloc / 100
-            engine.save_settings() # <-- ADDED: Instant save on allocation change
+            engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)# <-- ADDED: Instant save on allocation change
 
             st.caption("Higher risk, tighter stops, faster profits. Stocks under ${:.0f}.".format(engine.settings.get("penny_price_threshold", 5.0)))
             penny = engine.settings.get("penny_settings", {})
@@ -2675,7 +2714,7 @@ with tab3:
         with st.expander("🔵 Growth Stock Settings", expanded=False):
             growth_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("growth_pct", 0.35) * 100), step=1, format="%d%%", key="growth_alloc_slider", help="What percentage of your capital goes to growth stocks. Set to 0% to disable growth trading.")
             engine.settings["growth_pct"] = growth_alloc / 100
-            engine.save_settings() # <-- ADDED: Instant save on allocation change
+            save_settings_to_db(st.session_state.username, engine.settings) # <-- ADDED: Instant save on allocation change
 
             st.caption("Medium risk, balanced stops and targets. Most large-cap stocks.")
             growth = engine.settings.get("growth_settings", {})
@@ -2702,7 +2741,7 @@ with tab3:
         with st.expander("🟢 Dividend Stock Settings", expanded=False):
             dividend_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("dividend_pct", 0.35) * 100), step=1, format="%d%%", key="dividend_alloc_slider", help="What percentage of your capital goes to dividend stocks. Set to 0% to disable dividend trading.")
             engine.settings["dividend_pct"] = dividend_alloc / 100
-            engine.save_settings() # <-- ADDED: Instant save on allocation change
+            save_settings_to_db(st.session_state.username, engine.settings) # <-- ADDED: Instant save on allocation change
 
             st.caption("Lower risk, wider stops, longer holds. Dividend-paying stocks.")
             dividend = engine.settings.get("dividend_settings", {})
@@ -2754,6 +2793,7 @@ with tab3:
                 engine.settings["use_multi_timeframe"] = use_multi
 
             engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
 
         # --- WATCHLIST ---
         st.markdown("---")
