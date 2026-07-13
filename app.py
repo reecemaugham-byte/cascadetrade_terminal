@@ -2557,6 +2557,7 @@ with tab3:
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
+            tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
             max_pos_limit = tier_limits.get("max_positions", 10)
             max_pos = st.slider("📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.", disabled=is_risk_locked)
             engine.settings["max_positions"] = max_pos
