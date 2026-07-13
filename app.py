@@ -204,8 +204,7 @@ from trading_engine import (
 from core.database import (
     SessionLocal, User, Trade, authenticate_user, create_user,
     record_dividend, get_dividend_history,
-    save_trade_to_db, load_trades_from_db, clear_trades_from_db,
-    load_settings_from_db, save_settings_to_db
+    save_trade_to_db, load_trades_from_db, clear_trades_from_db
 )
 
 from core.terms import TERMS_OF_SERVICE, RISK_DISCLAIMER, PRIVACY_POLICY
