@@ -2123,22 +2123,45 @@ with tab3:
                 st.rerun()
 
         with col_btn2:
-            if engine.running:
+            # --- DATABASE-DRIVEN BOT CONTROL ---
+            db_bot = SessionLocal()
+            db_user = db_bot.query(User).filter(User.username == st.session_state.username).first()
+            bot_is_running = db_user.bot_running if db_user and hasattr(db_user, 'bot_running') else False
+            bot_status = db_user.bot_status if db_user and hasattr(db_user, 'bot_status') else 'Stopped'
+            db_bot.close()
+
+            if bot_is_running:
+                st.success(f"🟢 Bot is running — {bot_status}")
                 if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
-                    engine.stop()
-                    st.success("Bot stopped.")
+                    db_stop = SessionLocal()
+                    db_user_stop = db_stop.query(User).filter(User.username == st.session_state.username).first()
+                    if db_user_stop:
+                        db_user_stop.bot_running = False
+                        db_user_stop.bot_status = "Stopping"
+                        db_stop.commit()
+                    db_stop.close()
+                    st.success("Bot stopping... The worker will shut it down shortly.")
                     st.rerun()
             else:
                 if st.session_state.confirm_start_bot:
-                    if st.button("✅ Confirm Start", type="primary", use_container_width=True):
-                        st.session_state.confirm_start_bot = False
-                        engine.start()
-                        market = engine.is_market_open()
-                        if not market.get("is_open", True):
-                            st.warning("Market is closed. Bot will trade when it opens.")
-                        else:
-                            st.success("Bot started!")
-                        st.rerun()
+                    st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
+                    confirm_c1, confirm_c2 = st.columns(2)
+                    with confirm_c1:
+                        if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
+                            st.session_state.confirm_start_bot = False
+                            db_start = SessionLocal()
+                            db_user_start = db_start.query(User).filter(User.username == st.session_state.username).first()
+                            if db_user_start:
+                                db_user_start.bot_running = True
+                                db_user_start.bot_status = "Starting"
+                                db_start.commit()
+                            db_start.close()
+                            st.success("Bot starting... The worker will pick this up within 60 seconds.")
+                            st.rerun()
+                    with confirm_c2:
+                        if st.button("❌ Cancel", use_container_width=True):
+                            st.session_state.confirm_start_bot = False
+                            st.rerun()
                 else:
                     if st.button("▶️ Start Bot", use_container_width=True):
                         if not engine.connected:
@@ -2161,29 +2184,18 @@ with tab3:
                         else:
                             st.info("No signals found this scan.")
 
-        # --- Confirm Start Bot Warning ---
-        if st.session_state.confirm_start_bot:
-            st.warning("⚠️ Are you sure you want to start auto-trading? The bot will execute trades automatically based on your settings.")
-            confirm_c1, confirm_c2 = st.columns(2)
-            with confirm_c1:
-                if st.button("✅ Yes, Start Bot", type="primary", use_container_width=True):
-                    st.session_state.confirm_start_bot = False
-                    engine.start()
-                    market = engine.is_market_open()
-                    if not market.get("is_open", True):
-                        st.warning("Market is closed. Bot will trade when it opens.")
-                    else:
-                        st.success("Bot started!")
-                    st.rerun()
-            with confirm_c2:
-                if st.button("❌ Cancel", use_container_width=True):
-                    st.session_state.confirm_start_bot = False
-                    st.rerun()
+        # --- Confirm Start Bot Warning handled in database-driven control above ---
 
-        status = engine.get_status()
+        # Show status from database (what the worker sees)
+        db_status = SessionLocal()
+        db_status_user = db_status.query(User).filter(User.username == st.session_state.username).first()
+        worker_status = db_status_user.bot_status if db_status_user and hasattr(db_status_user, 'bot_status') else 'Stopped'
+        worker_running = db_status_user.bot_running if db_status_user and hasattr(db_status_user, 'bot_running') else False
+        db_status.close()
+
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
-        bot_icon = "🟢 Running" if engine.running else "⚪ Stopped"
-        st.caption(f"{conn_icon} | {bot_icon} | Cycles: {status['cycle_count']} | P&L: ${status['daily_pnl']:+,.2f}")
+        bot_icon = "🟢 Running" if worker_running else "⚪ Stopped"
+        st.caption(f"{conn_icon} | {bot_icon} | Worker: {worker_status} | P&L: ${engine.get_status()['daily_pnl']:+,.2f}")
 
         # --- Bucket Overview ---
         st.markdown("##### 💰 Bucket Overview")
@@ -2557,7 +2569,6 @@ with tab3:
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
             max_pos_limit = tier_limits.get("max_positions", 10)
             max_pos = st.slider("📊 Max Positions", 1, max_pos_limit, engine.settings["max_positions"], help=f"Maximum number of stocks you can hold at once. Your tier allows up to {max_pos_limit}.", disabled=is_risk_locked)
             engine.settings["max_positions"] = max_pos
