@@ -1,17 +1,29 @@
 """
 Roleigh QuanTrader — 24/7 Background Worker
-This script runs independently of Streamlit. It reads the database for active users,
-connects to Alpaca, and executes trades. 
+Runs independently of Streamlit. Reads the database for active users,
+connects to Alpaca, and executes trades.
 """
 
 import time
 import datetime
 import traceback
+import logging
 from core.database import SessionLocal, User
 from trading_engine import TradingEngine
 from utils import safe_decrypt
 
-# Keep track of active engines in memory so we don't reconnect every cycle
+# --- LOGGING SETUP ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/roleigh-worker.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Keep track of active engines in memory
 active_engines = {}
 
 def get_or_create_engine(user):
@@ -21,7 +33,7 @@ def get_or_create_engine(user):
     if username in active_engines:
         return active_engines[username]
     
-    print(f"[{datetime.datetime.now()}] ⚡ Initializing engine for {username}...")
+    logger.info(f"⚡ Initializing engine for {username}...")
     engine = TradingEngine()
     engine.set_username(username)
     active_engines[username] = engine
@@ -29,41 +41,53 @@ def get_or_create_engine(user):
 
 def connect_engine(engine, user):
     """Decrypt the user's Alpaca keys and connect the engine."""
-    # Decrypt keys
-    # Decrypt keys using the app's safe fallback method
     api_key = safe_decrypt(user.alpaca_api_key)
     secret_key = safe_decrypt(user.alpaca_secret_key)
         
     if not api_key or not secret_key:
         return False, "Missing Alpaca API keys"
     
-    # Determine Paper vs Live mode
     trading_mode = getattr(user, 'trading_mode', 'paper') or 'paper'
     is_live = trading_mode == 'live'
     
-    # Connect
     success = engine.connect_encrypted(api_key, secret_key, live_mode=is_live)
     return success, "Connected" if success else engine.status_message
 
+def stop_engine(username):
+    """Cleanly shut down a user's engine."""
+    if username in active_engines:
+        logger.info(f"🛑 Stopping engine for {username}...")
+        try:
+            active_engines[username].stop()
+        except Exception as e:
+            logger.warning(f"Error stopping engine for {username}: {e}")
+        finally:
+            del active_engines[username]
+
 def run_worker():
-    print("=" * 60)
-    print("🚀 Roleigh QuanTrader Worker Started")
-    print(f"⏰ Time: {datetime.datetime.now()}")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("🚀 Roleigh QuanTrader Worker Started")
+    logger.info(f"⏰ Time: {datetime.datetime.now()}")
+    logger.info("=" * 60)
+    
+    cycle = 0
     
     while True:
+        cycle += 1
         db = SessionLocal()
+        
         try:
             # 1. Find all users who have clicked "Start Bot"
             active_users = db.query(User).filter(User.bot_running == True).all()
-
+            
             if not active_users:
-                # Heartbeat so you know the worker is alive
-                print(f"[{datetime.datetime.now()}] 💤 No active bots. Waiting...", end="\r")
+                # Only print heartbeat every 6th cycle (every ~60 seconds at 10s sleep)
+                if cycle % 6 == 0:
+                    logger.info(f"[{datetime.datetime.now()}] 💤 No active bots. Waiting...")
                 time.sleep(10)
                 continue
-                
-            print(f"\n[{datetime.datetime.now()}] 🔄 Checking {len(active_users)} active bot(s)...")
+            
+            logger.info(f"\n[{datetime.datetime.now()}] 🔄 Cycle #{cycle} — Checking {len(active_users)} active bot(s)...")
             
             # 2. Run a cycle for each active user
             for user in active_users:
@@ -71,55 +95,57 @@ def run_worker():
                 try:
                     engine = get_or_create_engine(user)
                     
-                    # DEBUG: Print connection status
-                    print(f"[{datetime.datetime.now()}] 🔍 {username}: engine.connected = {engine.connected}")
+                    logger.info(f"🔍 {username}: engine.connected = {engine.connected}")
                     
                     # Connect if not connected
                     if not engine.connected:
-                        print(f"[{datetime.datetime.now()}] 🔌 {username}: Connecting to Alpaca...")
+                        logger.info(f"🔌 {username}: Connecting to Alpaca...")
                         success, msg = connect_engine(engine, user)
                         if not success:
-                            print(f"❌ {username}: Connection failed - {msg}")
+                            logger.error(f"❌ {username}: Connection failed - {msg}")
                             user.bot_status = f"Error: {msg[:50]}"
                             db.commit()
                             continue
-                        print(f"[{datetime.datetime.now()}] ✅ {username}: {msg}")
+                        logger.info(f"✅ {username}: {msg}")
                     
                     # Run one trading cycle
-                    print(f"[{datetime.datetime.now()}] 🔄 {username}: Running cycle...")
+                    logger.info(f"🔄 {username}: Running cycle...")
                     engine.run_cycle()
                     
                     # Update status in DB so Streamlit can see it
-                    user.bot_status = f"Running - Cycle {engine.cycle_count}"
+                    status_msg = f"Running - Cycle {engine.cycle_count}"
+                    user.bot_status = status_msg
                     db.commit()
-                    print(f"[{datetime.datetime.now()}] ✅ {username}: Cycle {engine.cycle_count} complete")
+                    logger.info(f"✅ {username}: Cycle {engine.cycle_count} complete")
                     
                 except Exception as e:
-                    print(f"❌ {username}: Cycle error - {str(e)}")
-                    user.bot_status = f"Error: {str(e)[:50]}"
-                    db.commit()
+                    logger.error(f"❌ {username}: Cycle error - {str(e)}")
+                    traceback.print_exc()
+                    try:
+                        user.bot_status = f"Error: {str(e)[:50]}"
+                        db.commit()
+                    except:
+                        pass
             
             # 3. Check for users who clicked "Stop Bot"
             stopped_users = db.query(User).filter(User.bot_running == False).all()
             for user in stopped_users:
                 username = user.username
                 if username in active_engines:
-                    print(f"🛑 Stopping engine for {username}...")
-                    engine = active_engines[username]
-                    engine.stop()
-                    del active_engines[username]
+                    stop_engine(username)
                 user.bot_status = "Stopped"
                 db.commit()
-                
+            
         except Exception as e:
-            print(f"❌ Database error: {str(e)}")
+            logger.error(f"❌ Database error: {str(e)}")
             traceback.print_exc()
         finally:
             db.close()
-            
-        # Wait 60 seconds before the next scan
-        print(f"[{datetime.datetime.now()}] 💤 Cycle complete. Sleeping for 60 seconds...")
-        time.sleep(60)
+        
+        # Adaptive sleep: shorter when bots are active, longer when idle
+        sleep_time = 30 if active_users else 10
+        logger.info(f"[{datetime.datetime.now()}] 💤 Cycle #{cycle} complete. Sleeping for {sleep_time}s...")
+        time.sleep(sleep_time)
 
 if __name__ == "__main__":
     run_worker()
