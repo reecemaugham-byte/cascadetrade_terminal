@@ -2,12 +2,11 @@
 core/tiers.py
 Roleigh QuanTrader — Tier Feature Definitions & Access Control
 
-Defines what each tier can access and provides helper functions
-to check feature availability for any user.
+All features unlocked for all users.
 """
 
 # ============================================================
-# TIER FEATURE DEFINITIONS
+# TIER FEATURE DEFINITIONS (All Unlocked)
 # ============================================================
 
 TIER_FEATURES = {
@@ -15,23 +14,23 @@ TIER_FEATURES = {
         "name": "Free (Paper)",
         "price": "£0/month",
         "paper_trading": True,
-        "live_trading": False,
+        "live_trading": True,
         "basic_signals": True,
         "stop_losses": True,
-        "vix_filter": False,
-        "trailing_stops": False,
-        "atr_position_sizing": False,
-        "profit_skimming": False,
-        "dividend_tracking": False,
-        "advanced_signals": False,
-        "ai_sentiment": False,
-        "drip_calculator": False,
-        "diamond_metrics": False,
-        "multiple_accounts": False,
-        "max_positions": 10,
-        "scan_interval_min": 5,
-        "max_watchlist": 25,
-        "discord_alerts": "basic",
+        "vix_filter": True,
+        "trailing_stops": True,
+        "atr_position_sizing": True,
+        "profit_skimming": True,
+        "dividend_tracking": True,
+        "advanced_signals": True,
+        "ai_sentiment": True,
+        "drip_calculator": True,
+        "diamond_metrics": True,
+        "multiple_accounts": True,
+        "max_positions": 50,
+        "scan_interval_min": 1,
+        "max_watchlist": 500,
+        "discord_alerts": "full_profit",
     },
     "live_trading": {
         "name": "Live Trading",
@@ -45,15 +44,15 @@ TIER_FEATURES = {
         "atr_position_sizing": True,
         "profit_skimming": True,
         "dividend_tracking": True,
-        "advanced_signals": False,
-        "ai_sentiment": False,
-        "drip_calculator": False,
-        "diamond_metrics": False,
-        "multiple_accounts": False,
-        "max_positions": 20,
-        "scan_interval_min": 3,
-        "max_watchlist": 100,
-        "discord_alerts": "full",
+        "advanced_signals": True,
+        "ai_sentiment": True,
+        "drip_calculator": True,
+        "diamond_metrics": True,
+        "multiple_accounts": True,
+        "max_positions": 50,
+        "scan_interval_min": 1,
+        "max_watchlist": 500,
+        "discord_alerts": "full_profit",
     },
     "pro_trader": {
         "name": "Pro Trader",
@@ -74,7 +73,7 @@ TIER_FEATURES = {
         "multiple_accounts": True,
         "max_positions": 50,
         "scan_interval_min": 1,
-        "max_watchlist": 9999,  # Unlimited
+        "max_watchlist": 500,
         "discord_alerts": "full_profit",
         "auto_rebalancing": True,
         "weekly_reports": True,
@@ -135,15 +134,11 @@ TIER_DISPLAY = {
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (All features unlocked)
 # ============================================================
 
 def get_user_tier(username: str) -> str:
-    """Get the effective tier for a user.
-    Delegates to database.get_user_tier() which checks both the
-    legacy tier column and Stripe subscription status/expiry.
-    Returns 'free' on any error or if not set.
-    """
+    """Get the effective tier for a user."""
     try:
         from core.database import SessionLocal, get_user_tier as db_get_user_tier
         db = SessionLocal()
@@ -158,16 +153,29 @@ def get_user_tier(username: str) -> str:
 
 
 def has_feature(username: str, feature: str) -> bool:
-    """Check if a user has access to a specific feature."""
-    tier = get_user_tier(username)
-    features = TIER_FEATURES.get(tier, TIER_FEATURES["free"])
-    return features.get(feature, False)
+    """All features unlocked for all users."""
+    return True
 
 
 def get_tier_limits(username: str) -> dict:
-    """Get the limits for a user's tier (max_positions, scan_interval, etc.)."""
-    tier = get_user_tier(username)
-    return TIER_FEATURES.get(tier, TIER_FEATURES["free"])
+    """All limits set to maximum for all users."""
+    return {
+        "max_positions": 50,
+        "max_watchlist": 500,
+        "scan_interval_min": 1,
+        "live_trading": True,
+        "ai_sentiment": True,
+        "advanced_signals": True,
+        "multi_timeframe": True,
+        "drip_calculator": True,
+        "profit_skimming": True,
+        "trailing_stops": True,
+        "atr_position_sizing": True,
+        "vix_filter": True,
+        "dividend_tracking": True,
+        "diamond_metrics": True,
+        "multiple_accounts": True,
+    }
 
 
 def get_tier_display(username: str) -> dict:
@@ -177,10 +185,7 @@ def get_tier_display(username: str) -> dict:
 
 
 def set_user_tier(username: str, tier: str) -> bool:
-    """Set a user's tier. Used by admin panel or payment webhook.
-    Delegates to database.set_user_tier() which also handles
-    subscription field syncing when appropriate.
-    """
+    """Set a user's tier."""
     if tier not in TIER_FEATURES:
         return False
     try:
