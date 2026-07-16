@@ -406,8 +406,7 @@ if not st.session_state.authenticated:
                     st.session_state.username = _username
                     st.session_state.trading_engine.set_username(_username)
                     st.session_state.trading_engine._load_trade_log()
-                    load_settings_from_db(_username, st.session_state.trading_engine)
-
+                    # load_settings_from_db(_username, st.session_state.trading_engine)
 
                     if AUDIT_AVAILABLE:
                         try:
