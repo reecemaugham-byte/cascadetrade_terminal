@@ -46,8 +46,8 @@ def load_settings_from_db(username, engine):
         user = db.query(User).filter(User.username == username).first()
         if user and hasattr(user, 'settings_json') and user.settings_json:
             saved = json.loads(user.settings_json)
-            for key, value in saved.items():
-                engine.settings[key] = value
+            # Deep merge so new defaults are preserved
+            engine._deep_merge(engine.settings, saved)
             engine.save_settings()
         db.close()
     except Exception as e:
@@ -406,7 +406,7 @@ if not st.session_state.authenticated:
                     st.session_state.username = _username
                     st.session_state.trading_engine.set_username(_username)
                     st.session_state.trading_engine._load_trade_log()
-                    # load_settings_from_db(_username, st.session_state.trading_engine)
+                    load_settings_from_db(_username, st.session_state.trading_engine)
 
                     if AUDIT_AVAILABLE:
                         try:
@@ -2164,14 +2164,15 @@ with tab3:
             if bot_is_running:
                 st.success(f"🟢 Bot is running — {bot_status}")
                 if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
+                    engine.stop()
                     db_stop = SessionLocal()
                     db_user_stop = db_stop.query(User).filter(User.username == st.session_state.username).first()
                     if db_user_stop:
                         db_user_stop.bot_running = False
-                        db_user_stop.bot_status = "Stopping"
+                        db_user_stop.bot_status = "Stopped"
                         db_stop.commit()
                     db_stop.close()
-                    st.success("Bot stopping... The worker will shut it down shortly.")
+                    st.success("Bot stopped.")
                     st.rerun()
             else:
                 if st.session_state.confirm_start_bot:
@@ -2184,10 +2185,14 @@ with tab3:
                             db_user_start = db_start.query(User).filter(User.username == st.session_state.username).first()
                             if db_user_start:
                                 db_user_start.bot_running = True
-                                db_user_start.bot_status = "Starting"
+                                db_user_start.bot_status = "Running"
                                 db_start.commit()
                             db_start.close()
-                            st.success("Bot starting... The worker will pick this up within 60 seconds.")
+                            if engine.connected:
+                                engine.start()
+                                st.success("Bot started! Scanning and trading automatically.")
+                            else:
+                                st.warning("Bot marked as running, but not connected to Alpaca. Click Connect first.")
                             st.rerun()
                     with confirm_c2:
                         if st.button("❌ Cancel", use_container_width=True):
@@ -2708,6 +2713,8 @@ with tab3:
                 penny["min_confidence"] = penny_conf
                 penny["penny_price_threshold"] = st.slider("💲 Penny Price Threshold $", 1.0, 20.0, float(penny.get("penny_price_threshold", 5.0)), step=0.5, format="$%.1f", key="penny_price_thresh", help="Stocks priced below this are classified as Penny")
             engine.settings["penny_settings"] = penny
+            engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
 
         with st.expander("🔵 Growth Stock Settings", expanded=False):
             growth_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("growth_pct", 0.35) * 100), step=1, format="%d%%", key="growth_alloc_slider", help="What percentage of your capital goes to growth stocks. Set to 0% to disable growth trading.")
@@ -2735,6 +2742,8 @@ with tab3:
                 growth_conf = st.slider("🎯 Min Confidence", 0.10, 0.95, growth.get("min_confidence", 0.25), step=0.05, format="%.2f", key="growth_conf")
                 growth["min_confidence"] = growth_conf
             engine.settings["growth_settings"] = growth
+            engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
 
         with st.expander("🟢 Dividend Stock Settings", expanded=False):
             dividend_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("dividend_pct", 0.35) * 100), step=1, format="%d%%", key="dividend_alloc_slider", help="What percentage of your capital goes to dividend stocks. Set to 0% to disable dividend trading.")
@@ -2763,8 +2772,9 @@ with tab3:
                 dividend["min_confidence"] = dividend_conf
                 dividend["min_dividend_yield"] = st.slider("💰 Min Dividend Yield %", 0.0, 15.0, float(dividend.get("min_dividend_yield", 0.03) * 100), step=0.5, format="%.1f%%", key="div_min_yield", help="Stocks with dividend yield above this are classified as Dividend") / 100
                 dividend["sell_after_ex_dividend"] = st.checkbox("🎯 Sell After Ex-Dividend Date", value=dividend.get("sell_after_ex_dividend", False), help="Automatically sell dividend stocks 1 day after their ex-dividend date. You capture the dividend, then sell the stock. Only affects dividend bucket stocks.")
-                engine.settings["dividend_settings"] = dividend
             engine.settings["dividend_settings"] = dividend
+            engine.save_settings()
+            save_settings_to_db(st.session_state.username, engine.settings)
 
         with st.expander("🔬 Advanced Signals", expanded=False):
             st.caption("MACD, Bollinger, VIX filter, ATR position sizing.")
