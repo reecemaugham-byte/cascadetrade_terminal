@@ -96,7 +96,7 @@ except Exception:
     AUDIT_AVAILABLE = False
 
 try:
-    from core.encryption import encrypt_value, decrypt_value
+    from core.encryption import encrypt_value, decrypt_value, is_encrypted
     ENCRYPTION_AVAILABLE = True
 except Exception:
     ENCRYPTION_AVAILABLE = False
@@ -457,10 +457,26 @@ class TradingEngine:
                 market = self.is_market_open()
                 if market.get("is_open", False):
                     self.run_cycle()
+                    self.consecutive_failures = 0
+                    self.last_successful_cycle = datetime.utcnow().isoformat()
                 else:
                     self.status_message = f"Market closed. {market.get('day_name', '')}"
             except Exception as e:
                 self.status_message = f"Cycle error: {str(e)}"
+                self.consecutive_failures += 1
+                # Try to reconnect if connection seems lost
+                if self.consecutive_failures >= 3:
+                    try:
+                        account = self.get_account_info()
+                        if "error" in account:
+                            self.status_message = f"Connection lost. Attempting reconnect ({self.consecutive_failures} failures)..."
+                            if self._reconnect():
+                                self.status_message = "Reconnected successfully."
+                            elif self.consecutive_failures >= self.MAX_RECONNECT_ATTEMPTS:
+                                self.running = False
+                                self.status_message = "Max reconnection attempts reached. Bot stopped."
+                    except Exception:
+                        pass
             interval = self.settings.get("scan_interval_min", 5) * 60
             self._stop_event.wait(timeout=interval)
 
@@ -1536,7 +1552,7 @@ class TradingEngine:
                 "qty": qty,
                 "pl": pl,
                 "pl_pct": pl_pct,
-                "pl_dollar": pl_dollar,
+                "pl_dollar": pl,
                 "market_value": market_value,
             }
 
@@ -1712,8 +1728,8 @@ class TradingEngine:
                     for d in div_result.get("details", []):
                         self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + d.get("amount", 0)
                         self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + d.get("amount", 0)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log_error("dividends", str(e))
             
             # Check sell after ex-dividend
             try:
@@ -1723,9 +1739,8 @@ class TradingEngine:
                         if result.get("close_result", {}).get("status") == "success":
                             self.buckets["withdrawal"]["available"] = self.buckets["withdrawal"].get("available", 0) + result.get("dividend_income", 0)
                             self.buckets["withdrawal"]["dividends_received"] = self.buckets["withdrawal"].get("dividends_received", 0) + result.get("dividend_income", 0)
-            except Exception:
-                pass
-            
+            except Exception as e:
+                self._log_error("sell_after_dividend", str(e))
 
             # Check profit extraction
             if self.settings.get("auto_extract_profits", True):
