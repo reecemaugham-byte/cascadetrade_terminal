@@ -219,7 +219,7 @@ DEFAULT_SETTINGS = {
     "stop_loss_pct": 0.05,
     "take_profit_pct": 0.10,
     "min_confidence": 0.25,
-    "scan_interval_min": 5,
+    "scan_interval_min": 8,
     "max_same_sector": 3,
     "min_rvol": 1.5,
     "dividend_pct": 0.35,
@@ -477,7 +477,7 @@ class TradingEngine:
                                 self.status_message = "Max reconnection attempts reached. Bot stopped."
                     except Exception:
                         pass
-            interval = self.settings.get("scan_interval_min", 5) * 60
+            interval = self.settings.get("scan_interval_min", 8) * 60
             self._stop_event.wait(timeout=interval)
 
     # ==========================================
