@@ -2164,7 +2164,6 @@ with tab3:
             if bot_is_running:
                 st.success(f"🟢 Bot is running — {bot_status}")
                 if st.button("⏹️ Stop Bot", type="primary", use_container_width=True):
-                    engine.stop()
                     db_stop = SessionLocal()
                     db_user_stop = db_stop.query(User).filter(User.username == st.session_state.username).first()
                     if db_user_stop:
@@ -2172,7 +2171,7 @@ with tab3:
                         db_user_stop.bot_status = "Stopped"
                         db_stop.commit()
                     db_stop.close()
-                    st.success("Bot stopped.")
+                    st.success("Bot stopping... The worker will shut it down shortly.")
                     st.rerun()
             else:
                 if st.session_state.confirm_start_bot:
@@ -2188,11 +2187,7 @@ with tab3:
                                 db_user_start.bot_status = "Running"
                                 db_start.commit()
                             db_start.close()
-                            if engine.connected:
-                                engine.start()
-                                st.success("Bot started! Scanning and trading automatically.")
-                            else:
-                                st.warning("Bot marked as running, but not connected to Alpaca. Click Connect first.")
+                            st.success("Bot started! The background worker will begin trading within 30 seconds.")
                             st.rerun()
                     with confirm_c2:
                         if st.button("❌ Cancel", use_container_width=True):
@@ -2231,7 +2226,24 @@ with tab3:
 
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
         bot_icon = "🟢 Running" if worker_running else "⚪ Stopped"
-        st.caption(f"{conn_icon} | {bot_icon} | Worker: {worker_status} | P&L: ${engine.get_status()['daily_pnl']:+,.2f}")
+        
+        # Check if worker is actually alive (heartbeat within last 2 minutes)
+        worker_alive = False
+        try:
+            db_hb = SessionLocal()
+            hb_user = db_hb.query(User).filter(User.username == st.session_state.username).first()
+            if hb_user and hasattr(hb_user, 'last_login') and hb_user.last_login:
+                last_hb = hb_user.last_login
+                if hasattr(last_hb, 'replace'):
+                    last_hb = last_hb.replace(tzinfo=None)
+                seconds_since_hb = (datetime.utcnow() - last_hb).total_seconds()
+                worker_alive = seconds_since_hb < 120  # Alive if heartbeat within 2 minutes
+            db_hb.close()
+        except Exception:
+            pass
+        
+        worker_heartbeat = "💚 Worker alive" if worker_alive else "⚠️ Worker not detected"
+        st.caption(f"{conn_icon} | {bot_icon} | {worker_heartbeat} | P&L: ${engine.get_status()['daily_pnl']:+,.2f}")
 
         # --- Bucket Overview ---
         st.markdown("##### 💰 Bucket Overview")
@@ -2680,7 +2692,7 @@ with tab3:
             else:
                 st.success("🟢 Strong volume backing.")
         with col_r3:
-            scan_interval = st.slider("⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans. Lower = faster but uses more API calls.", disabled=is_risk_locked)
+            scan_interval = st.slider("⏱️ Scan Interval (min)", 1, 30, engine.settings["scan_interval_min"], help="Minutes between scans. Recommended: 8 min (scan takes ~7 min, so 8 min gap prevents overlap).", disabled=is_risk_locked)
             engine.settings["scan_interval_min"] = scan_interval
 
         st.markdown("---")
