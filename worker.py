@@ -9,6 +9,7 @@ import datetime
 import traceback
 import logging
 from core.database import SessionLocal, User
+from sqlalchemy import text
 from trading_engine import TradingEngine
 from utils import safe_decrypt
 
@@ -74,6 +75,7 @@ def run_worker():
     while True:
         cycle += 1
         db = SessionLocal()
+        active_users = []
         
         try:
             # 1. Find all users who have clicked "Start Bot"
@@ -107,6 +109,10 @@ def run_worker():
                             continue
                         logger.info(f"✅ {username}: {msg}")
                     
+                    # Reload settings from file so UI changes take effect
+                    engine.load_settings()
+                    engine.invalidate_bucket_cache()
+                    
                     # Run one trading cycle
                     logger.info(f"🔄 {username}: Running cycle...")
                     engine.run_cycle()
@@ -114,9 +120,9 @@ def run_worker():
                     # Update status in DB so Streamlit can see it
                     status_msg = f"Running - Cycle {engine.cycle_count}"
                     user.bot_status = status_msg
+                    user.last_login = datetime.datetime.utcnow()  # Use as heartbeat timestamp
                     db.commit()
                     logger.info(f"✅ {username}: Cycle {engine.cycle_count} complete")
-                    
                 except Exception as e:
                     logger.error(f"❌ {username}: Cycle error - {str(e)}")
                     traceback.print_exc()
@@ -141,8 +147,17 @@ def run_worker():
         finally:
             db.close()
         
-        # Adaptive sleep: shorter when bots are active, longer when idle
-        sleep_time = 30 if active_users else 10
+        # Use the shortest scan interval from active users' settings
+        if active_users:
+            min_interval = min(
+                (e.settings.get("scan_interval_min", 8) * 60 for e in 
+                 [active_engines.get(u.username) for u in active_users if u.username in active_engines]
+                 if e is not None),
+                default=300
+            )
+            sleep_time = max(60, min_interval)  # At least 60 seconds
+        else:
+            sleep_time = 10
         logger.info(f"[{datetime.datetime.now()}] 💤 Cycle #{cycle} complete. Sleeping for {sleep_time}s...")
         time.sleep(sleep_time)
 
