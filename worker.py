@@ -1,19 +1,16 @@
 """
 Roleigh QuanTrader — 24/7 Background Worker
-Runs independently of Streamlit. Reads the database for active users,
-connects to Alpaca, and executes trades.
 """
 
 import time
 import datetime
+import json
 import traceback
 import logging
 from core.database import SessionLocal, User
-from sqlalchemy import text
 from trading_engine import TradingEngine
 from utils import safe_decrypt
 
-# --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -24,40 +21,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Keep track of active engines in memory
 active_engines = {}
 
 def get_or_create_engine(user):
-    """Get an existing engine for a user, or create a new one."""
     username = user.username
-    
     if username in active_engines:
         return active_engines[username]
-    
-    logger.info(f"⚡ Initializing engine for {username}...")
+    logger.info(f"Initializing engine for {username}...")
     engine = TradingEngine()
     engine.set_username(username)
     active_engines[username] = engine
     return engine
 
 def connect_engine(engine, user):
-    """Decrypt the user's Alpaca keys and connect the engine."""
     api_key = safe_decrypt(user.alpaca_api_key or "")
     secret_key = safe_decrypt(user.alpaca_secret_key or "")
-        
     if not api_key or not secret_key:
         return False, "Missing Alpaca API keys"
-    
     trading_mode = getattr(user, 'trading_mode', 'paper') or 'paper'
     is_live = trading_mode == 'live'
-    
     success = engine.connect_encrypted(api_key, secret_key, live_mode=is_live)
     return success, "Connected" if success else engine.status_message
 
 def stop_engine(username):
-    """Cleanly shut down a user's engine."""
     if username in active_engines:
-        logger.info(f"🛑 Stopping engine for {username}...")
+        logger.info(f"Stopping engine for {username}...")
         try:
             active_engines[username].stop()
         except Exception as e:
@@ -66,57 +54,39 @@ def stop_engine(username):
             del active_engines[username]
 
 def load_settings_from_db_for_worker(engine, username):
-    """Load settings from DB and apply to engine, with verification."""
+    """Load settings from DB into the engine."""
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
         if user and hasattr(user, 'settings_json') and user.settings_json:
-            try:
-                import json
-                saved = json.loads(user.settings_json)
-                engine._deep_merge(engine.settings, saved)
-                engine.save_settings()
-                logger.info(f"✅ {username}: Loaded {len(saved)} settings from DB")
-                return True
-            except Exception as e:
-                logger.warning(f"⚠️ {username}: Failed to parse settings_json: {e}")
-        else:
-            logger.warning(f"⚠️ {username}: No settings_json in DB, using file defaults")
+            saved = json.loads(user.settings_json)
+            engine._deep_merge(engine.settings, saved)
+            engine.save_settings()
+            logger.info(f"Loaded {len(saved)} settings from DB for {username}")
+            db.close()
+            return True
         db.close()
     except Exception as e:
-        logger.error(f"❌ {username}: Error loading settings from DB: {e}")
+        logger.warning(f"Could not load DB settings for {username}: {e}")
     return False
 
 def save_settings_to_db_for_worker(username, settings_dict):
-    """Save settings to DB with verification."""
+    """Save engine settings back to DB so Streamlit sees them."""
     try:
-        import json
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
-        if user:
-            if hasattr(user, 'settings_json'):
-                user.settings_json = json.dumps(settings_dict)
-                db.commit()
-                # Verify the save worked
-                db.refresh(user)
-                if user.settings_json:
-                    logger.info(f"✅ {username}: Settings saved to DB ({len(settings_dict)} keys)")
-                    return True
-                else:
-                    logger.error(f"❌ {username}: settings_json is NULL after save!")
-            else:
-                logger.error(f"❌ {username}: User model doesn't have settings_json column!")
-        else:
-            logger.warning(f"⚠️ {username}: User not found in DB")
+        if user and hasattr(user, 'settings_json'):
+            user.settings_json = json.dumps(settings_dict)
+            db.commit()
+            logger.info(f"Saved settings to DB for {username}")
         db.close()
     except Exception as e:
-        logger.error(f"❌ {username}: Error saving settings to DB: {e}")
-    return False
+        logger.warning(f"Could not save settings to DB for {username}: {e}")
 
 def run_worker():
     logger.info("=" * 60)
-    logger.info("🚀 Roleigh QuanTrader Worker Started")
-    logger.info(f"⏰ Time: {datetime.datetime.now()}")
+    logger.info("Worker Started")
+    logger.info(f"Time: {datetime.datetime.now()}")
     logger.info("=" * 60)
     
     cycle = 0
@@ -124,126 +94,112 @@ def run_worker():
     while True:
         cycle += 1
         db = SessionLocal()
-        active_users = []
         
         try:
-            # 1. Find all users who have clicked "Start Bot"
             active_users = db.query(User).filter(User.bot_running == True).all()
             
             if not active_users:
                 if cycle % 6 == 0:
-                    logger.info(f"[{datetime.datetime.now()}] 💤 No active bots. Waiting...")
+                    logger.info(f"[{datetime.datetime.now()}] No active bots. Waiting...")
+                db.close()
                 time.sleep(10)
                 continue
             
-            # Heartbeat: update last_login for all active users
-            for user in active_users:
-                try:
-                    user.last_login = datetime.datetime.utcnow()
-                    db.commit()
-                except Exception as e:
-                    logger.warning(f"⚠️ Heartbeat update failed for {user.username}: {e}")
-          
-            logger.info(f"\n[{datetime.datetime.now()}] 🔄 Cycle #{cycle} — Checking {len(active_users)} active bot(s)...")
+            logger.info(f"\n[{datetime.datetime.now()}] Cycle #{cycle} — {len(active_users)} active bot(s)")
             
-            # 2. Run a cycle for each active user
             for user in active_users:
                 username = user.username
                 try:
                     engine = get_or_create_engine(user)
                     
-                    # Connect if not connected
                     if not engine.connected:
-                        logger.info(f"🔌 {username}: Connecting to Alpaca...")
+                        logger.info(f"Connecting {username}...")
                         success, msg = connect_engine(engine, user)
                         if not success:
-                            logger.error(f"❌ {username}: Connection failed - {msg}")
-                            user.bot_status = f"Error: {msg[:80]}"
-                            db.commit()
+                            logger.error(f"Connection failed for {username}: {msg}")
+                            try:
+                                user.bot_status = f"Error: {msg[:80]}"
+                                db.commit()
+                            except Exception:
+                                pass
                             continue
-                        logger.info(f"✅ {username}: {msg}")
+                        logger.info(f"Connected {username}")
                     
-                    # Load settings from DB first (most up-to-date)
+                    # Load settings from DB (most up-to-date)
                     load_settings_from_db_for_worker(engine, username)
-                    # Then also load from file (in case DB is empty)
+                    # Also load from file as fallback
                     engine.load_settings()
-                    
-                    # Invalidate all caches before each cycle for fresh data
+                    # Clear caches for fresh data
                     engine.invalidate_all_caches()
                     
-                    # Auto-build watchlist if it's too small or stale
+                    # Auto-build watchlist if too small
                     watchlist_size = len(engine.settings.get("watchlist", []))
-                    wl_last_built = engine.settings.get("watchlist_last_built", "")
-                    needs_build = watchlist_size < 50 or not wl_last_built
-                    
-                    if needs_build and engine.connected:
+                    if watchlist_size < 50 and engine.connected:
                         try:
-                            top_n = engine.settings.get("watchlist_auto_count", 100)
-                            logger.info(f"📋 {username}: Auto-building watchlist ({watchlist_size} stocks, needs >= 50)...")
-                            wl = engine.auto_build_watchlist(top_n=top_n)
-                            if wl:
-                                engine.settings["watchlist_last_built"] = datetime.datetime.utcnow().isoformat()
+                            logger.info(f"Auto-building watchlist for {username} ({watchlist_size} stocks)...")
+                            wl = engine.auto_build_watchlist(top_n=engine.settings.get("watchlist_auto_count", 150))
+                            if wl and len(wl) > watchlist_size:
+                                engine.settings["watchlist_last_built"] = datetime.datetime.now().isoformat()
                                 engine.save_settings()
                                 save_settings_to_db_for_worker(username, engine.settings)
-                                logger.info(f"✅ {username}: Auto-built watchlist with {len(wl)} stocks")
+                                logger.info(f"Auto-built watchlist: {len(wl)} stocks for {username}")
                         except Exception as e:
-                            logger.warning(f"⚠️ {username}: Auto-build failed: {e}")
+                            logger.warning(f"Auto-build failed for {username}: {e}")
                     
-                    # Log key settings for debugging
-                    watchlist = engine.settings.get("watchlist", [])
-                    logger.info(f"📋 {username}: Watchlist has {len(watchlist)} stocks")
-                    logger.info(f"⚙️ {username}: Dividend={engine.settings.get('dividend_pct', 0):.0%} "
-                               f"Growth={engine.settings.get('growth_pct', 0):.0%} "
-                               f"Penny={engine.settings.get('penny_pct', 0):.0%}")
-                    
-                    # Run one trading cycle
-                    logger.info(f"🔄 {username}: Running cycle...")
+                    # Run trading cycle
                     engine.run_cycle()
                     
-                    # Log the result
-                    status = engine.status_message
-                    logger.info(f"📊 {username}: {status}")
+                    # Get status BEFORE closing session
+                    status_msg = engine.status_message
+                    logger.info(f"{username}: {status_msg}")
                     
-                    # Update status in DB so Streamlit can see it
-                    user.bot_status = status_msg[:200] if status_msg else "Running"
-                    user.last_login = datetime.datetime.utcnow()  # Heartbeat
-                    db.commit()
+                    # Update database (heartbeat + status)
+                    try:
+                        user.bot_status = status_msg[:200] if status_msg else "Running"
+                        user.last_login = datetime.datetime.now()
+                        db.commit()
+                    except Exception:
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
                     
-                    # Save settings back to DB in case the engine modified them
+                    # Save settings back to DB in case engine modified them
                     save_settings_to_db_for_worker(username, engine.settings)
                     
                 except Exception as e:
-                    logger.error(f"❌ {username}: Cycle error - {str(e)}")
+                    logger.error(f"Cycle error for {username}: {e}")
                     traceback.print_exc()
                     try:
-                        user.bot_status = f"Error: {str(e)[:80]}"
-                        db.commit()
-                    except:
+                        db.rollback()
+                    except Exception:
                         pass
-            # Update heartbeat for all active users (even if market is closed)
-            for user in active_users:
-                try:
-                    user.last_login = datetime.datetime.utcnow()
-                    db.commit()
-                except Exception:
-                    pass
             
-            # 3. Check for users who clicked "Stop Bot"
-            stopped_users = db.query(User).filter(User.bot_running == False).all()
-            for user in stopped_users:
-                username = user.username
-                if username in active_engines:
-                    stop_engine(username)
-                user.bot_status = "Stopped"
-                db.commit()
+            # Stop engines for users who clicked Stop
+            try:
+                stopped_users = db.query(User).filter(User.bot_running == False).all()
+                for user in stopped_users:
+                    username = user.username
+                    if username in active_engines:
+                        stop_engine(username)
+                    try:
+                        user.bot_status = "Stopped"
+                        db.commit()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             
         except Exception as e:
-            logger.error(f"❌ Database error: {str(e)}")
+            logger.error(f"Database error: {e}")
             traceback.print_exc()
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
         
-        # Calculate sleep time based on active users' settings
+        # Calculate sleep time based on active engines
         if active_users:
             intervals = []
             for user in active_users:
@@ -255,7 +211,7 @@ def run_worker():
         else:
             sleep_time = 10
         
-        logger.info(f"💤 Cycle #{cycle} complete. Sleeping for {sleep_time}s...")
+        logger.info(f"Cycle #{cycle} complete. Sleeping {sleep_time}s...")
         time.sleep(sleep_time)
 
 if __name__ == "__main__":
