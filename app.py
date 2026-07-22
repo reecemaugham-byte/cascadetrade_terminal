@@ -2248,14 +2248,19 @@ with tab3:
                 if not engine.connected:
                     st.error("Connect to Alpaca first!")
                 else:
-                    with st.spinner("Scanning for signals..."):
+                    use_uni = engine.settings.get("scan_full_universe", True)
+                    uni_count = engine.settings.get("universe_scan_count", 300)
+                    scan_msg = f"Scanning {'universe' if use_uni else 'watchlist'} for signals..."
+                    with st.spinner(scan_msg):
+                        engine.invalidate_all_caches()  # Force fresh data
                         signals = engine.scan_signals()
-                        if signals:
-                            buy_count = sum(1 for s in signals if s["signal"] == "BUY")
-                            sell_count = sum(1 for s in signals if s["signal"] == "SELL")
-                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells")
+                        buy_count = sum(1 for s in signals if s["signal"] == "BUY")
+                        sell_count = sum(1 for s in signals if s["signal"] == "SELL")
+                        hold_count = len(signals) - buy_count - sell_count
+                        if buy_count > 0 or sell_count > 0:
+                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
                         else:
-                            st.info("No signals found this scan.")
+                            st.info(f"Scanned {len(signals)} stocks — no strong buy/sell signals found. Try adjusting your RSI/confidence thresholds in Settings.")
 
         # --- Confirm Start Bot Warning handled in database-driven control above ---
 
@@ -2269,8 +2274,10 @@ with tab3:
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
         bot_icon = "🟢 Running" if worker_running else "⚪ Stopped"
         
-        # Check if worker is actually alive (heartbeat within last 2 minutes)
+        # Check if worker is actually alive (heartbeat within last 5 minutes)
         worker_alive = False
+        seconds_since_hb = 9999
+        last_hb_str = "Never"
         try:
             db_hb = SessionLocal()
             hb_user = db_hb.query(User).filter(User.username == st.session_state.username).first()
@@ -2279,13 +2286,35 @@ with tab3:
                 if hasattr(last_hb, 'replace'):
                     last_hb = last_hb.replace(tzinfo=None)
                 seconds_since_hb = (datetime.utcnow() - last_hb).total_seconds()
-                worker_alive = seconds_since_hb < 120  # Alive if heartbeat within 2 minutes
+                worker_alive = seconds_since_hb < 300  # Alive if heartbeat within 5 minutes
+                last_hb_str = f"{int(seconds_since_hb // 60)}m {int(seconds_since_hb % 60)}s ago"
+            # Get the full bot status message
+            worker_status_msg = getattr(hb_user, 'bot_status', 'Unknown') if hb_user else 'Unknown'
             db_hb.close()
         except Exception:
-            pass
+            worker_status_msg = "Unknown"
         
-        worker_heartbeat = "💚 Worker alive" if worker_alive else "⚠️ Worker not detected"
-        st.caption(f"{conn_icon} | {bot_icon} | {worker_heartbeat} | P&L: ${engine.get_status()['daily_pnl']:+,.2f}")
+        worker_heartbeat = "💚 Worker alive" if worker_alive else "⚠️ Worker not detected (last seen: " + last_hb_str + ")"
+        
+        # Display status with more detail
+        if worker_running:
+            if worker_alive:
+                st.success(f"🟢 **Bot is LIVE** — Last activity: {last_hb_str}")
+            else:
+                st.warning(f"⚠️ Bot is marked as running but no recent heartbeat (last: {last_hb_str})")
+        
+        with st.expander("📡 Worker Details", expanded=worker_running):
+            st.write(f"**Connection:** {conn_icon}")
+            st.write(f"**Bot:** {bot_icon}")
+            st.write(f"**Heartbeat:** {worker_heartbeat}")
+            st.write(f"**Last Status:** {worker_status_msg}")
+            st.write(f"**Cycles Completed:** {engine.cycle_count}")
+            st.write(f"**Daily P&L:** ${engine.daily_pnl:+,.2f}")
+            if engine.last_successful_cycle:
+                st.write(f"**Last Successful Cycle:** {engine.last_successful_cycle[:19]}")
+            scan_mode = "Full Universe" if engine.settings.get("scan_full_universe", True) else "Watchlist Only"
+            st.write(f"**Scan Mode:** {scan_mode} ({engine.settings.get('universe_scan_count', 300)} stocks)")
+            st.write(f"**Watchlist Size:** {len(engine.settings.get('watchlist', []))} stocks")
 
         # --- Bucket Overview ---
         st.markdown("##### 💰 Bucket Overview")
