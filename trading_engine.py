@@ -212,6 +212,13 @@ SECTOR_MAP = {
     "TTWO": "Communication Services",
 }
 
+# VIX cache to avoid hammering Yahoo
+_VIX_CACHE = {"value": 0.0, "timestamp": 0.0, "safe": True, "reason": ""}
+_VIX_CACHE_TTL = 300  # 5 minutes
+
+# Reconnection reset
+MAX_CONSECUTIVE_SCAN_FAILURES = 10
+
 DEFAULT_SETTINGS = {
     "max_positions": 10,
     "max_position_pct": 0.08,
@@ -626,24 +633,72 @@ class TradingEngine:
             return {"is_open": False, "current_time_et": str(e), "day_name": "Unknown"}
 
     def check_vix(self) -> Dict:
-        """Check VIX level and determine if it's safe to trade."""
+        """Check VIX level with 5-minute caching to avoid hammering Yahoo."""
+        global _VIX_CACHE
+        
+        # Return cached result if fresh
+        now = time.time()
+        if (now - _VIX_CACHE["timestamp"]) < _VIX_CACHE_TTL and _VIX_CACHE["timestamp"] > 0:
+            return {
+                "safe_to_trade": _VIX_CACHE["safe"],
+                "vix_value": _VIX_CACHE["value"],
+                "reason": _VIX_CACHE["reason"],
+            }
+        
         try:
             if not YF_AVAILABLE:
-                return {"safe_to_trade": True, "vix_value": 0, "reason": "yfinance not available"}
+                result = {"safe_to_trade": True, "vix_value": 0, "reason": "yfinance not available — VIX filter disabled"}
+                _VIX_CACHE = {"value": 0, "timestamp": now, "safe": True, "reason": result["reason"]}
+                return result
+            
             vix_data = yf.Ticker("^VIX").history(period="5d")
             if vix_data.empty:
-                return {"safe_to_trade": True, "vix_value": 0, "reason": "VIX data unavailable"}
+                # Use last known VIX if available, otherwise allow trading
+                if _VIX_CACHE["timestamp"] > 0:
+                    return {
+                        "safe_to_trade": _VIX_CACHE["safe"],
+                        "vix_value": _VIX_CACHE["value"],
+                        "reason": f"VIX data unavailable, using last known: {_VIX_CACHE['value']:.1f}",
+                    }
+                result = {"safe_to_trade": True, "vix_value": 0, "reason": "VIX data unavailable — filter disabled"}
+                _VIX_CACHE = {"value": 0, "timestamp": now, "safe": True, "reason": result["reason"]}
+                return result
+            
             vix_value = float(vix_data['Close'].iloc[-1])
             vix_threshold = 28.0
+            
             if self.settings.get("use_vix_filter", True) and vix_value > vix_threshold:
-                return {
+                result = {
                     "safe_to_trade": False,
                     "vix_value": vix_value,
-                    "reason": f"VIX is {vix_value:.1f} (above {vix_threshold:.0f} threshold). Market volatile — buying paused.",
+                    "reason": f"VIX is {vix_value:.1f} (above {vix_threshold:.0f}). Buying paused — market volatile.",
                 }
-            return {"safe_to_trade": True, "vix_value": vix_value, "reason": f"VIX is {vix_value:.1f} — safe to trade."}
+            else:
+                result = {
+                    "safe_to_trade": True,
+                    "vix_value": vix_value,
+                    "reason": f"VIX is {vix_value:.1f} — safe to trade.",
+                }
+            
+            _VIX_CACHE = {
+                "value": vix_value,
+                "timestamp": now,
+                "safe": result["safe_to_trade"],
+                "reason": result["reason"],
+            }
+            return result
+            
         except Exception as e:
-            return {"safe_to_trade": True, "vix_value": 0, "reason": f"VIX check error: {e}"}
+            # On error, use last cached value or allow trading
+            if _VIX_CACHE["timestamp"] > 0:
+                return {
+                    "safe_to_trade": _VIX_CACHE["safe"],
+                    "vix_value": _VIX_CACHE["value"],
+                    "reason": f"VIX check error, using cache: {_VIX_CACHE['value']:.1f}",
+                }
+            result = {"safe_to_trade": True, "vix_value": 0, "reason": f"VIX check error — filter disabled: {e}"}
+            _VIX_CACHE = {"value": 0, "timestamp": now, "safe": True, "reason": result["reason"]}
+            return result
 
     # ==========================================
     # Account & Position Info
@@ -928,14 +983,44 @@ class TradingEngine:
             return self.settings.get("growth_settings", DEFAULT_SETTINGS["growth_settings"])
 
     def _get_current_price(self, symbol: str) -> float:
-        """Get the current price for a symbol, with caching."""
+        """Get the current price for a symbol. Uses Alpaca first, then yfinance fallback."""
         symbol = symbol.upper().strip()
         now = time.time()
+        
+        # Check cache (2 min TTL)
         if symbol in self._price_cache and (now - self._price_cache_time) < 120:
             return self._price_cache.get(symbol, 0)
 
-        try:
-            if YF_AVAILABLE:
+        price = 0.0
+
+        # ===== PRIMARY: Alpaca quote =====
+        if self.connected and self.api:
+            try:
+                quote = self.api.get_latest_quote(symbol)
+                if quote:
+                    bid = float(getattr(quote, 'bid_price', 0) or getattr(quote, 'bid', 0) or 0)
+                    ask = float(getattr(quote, 'ask_price', 0) or getattr(quote, 'ask', 0) or 0)
+                    if bid > 0 and ask > 0:
+                        price = (bid + ask) / 2
+                    elif ask > 0:
+                        price = ask
+                    elif bid > 0:
+                        price = bid
+            except Exception:
+                pass
+
+            # Fallback: try latest trade
+            if price <= 0:
+                try:
+                    trade = self.api.get_latest_trade(symbol)
+                    if trade:
+                        price = float(getattr(trade, 'price', 0) or 0)
+                except Exception:
+                    pass
+
+        # ===== FALLBACK: yfinance =====
+        if price <= 0 and YF_AVAILABLE:
+            try:
                 ticker = yf.Ticker(symbol)
                 info = ticker.info or {}
                 price = info.get("currentPrice", info.get("regularMarketPrice", info.get("previousClose", 0)))
@@ -943,13 +1028,17 @@ class TradingEngine:
                     hist = ticker.history(period="5d")
                     if not hist.empty:
                         price = float(hist['Close'].iloc[-1])
-                if price and price > 0:
-                    self._price_cache[symbol] = float(price)
-                    self._price_cache_time = now
-                    return float(price)
-        except Exception:
-            pass
-        return 0
+            except Exception:
+                pass
+
+        if price > 0:
+            self._price_cache[symbol] = float(price)
+            self._price_price_time = now
+            self._price_cache_time = now
+        else:
+            self._price_cache[symbol] = 0
+
+        return float(price) if price > 0 else 0
     # ==========================================
     # Scanning & Signals (scan_signals and evaluate_risk are SEPARATE methods)
     # ==========================================
@@ -1132,7 +1221,7 @@ class TradingEngine:
         self.status_message = f"Scan complete: {len(self.signals_found)} signals found"
 
     def evaluate_risk(self, symbol: str, signal_data: Dict) -> Dict:
-        """Evaluate if a trade meets risk criteria. Separate method, NOT nested in scan_all."""
+        """Evaluate if a trade meets risk criteria. Logs every rejection reason."""
         result = {
             "approved": False,
             "symbol": symbol,
@@ -1179,7 +1268,7 @@ class TradingEngine:
                     # ATR position sizing
                     if self.settings.get("use_atr_position_sizing", True) and signal_data.get("atr", 0) > 0:
                         atr = signal_data.get("atr", 0)
-                        risk_per_share = atr * 2  # Use 2x ATR as risk distance
+                        risk_per_share = atr * 2
                         stop_loss_pct = bucket_settings.get("stop_loss_pct",
                                       self.settings.get("stop_loss_pct", 0.05))
                         if risk_per_share > 0 and stop_loss_pct > 0:
@@ -1232,6 +1321,7 @@ class TradingEngine:
 
         except Exception as e:
             result["reasons"].append(f"Risk evaluation error: {e}")
+            self._log_error("evaluate_risk", str(e), symbol)
             return result
 
     # ==========================================
@@ -1239,10 +1329,9 @@ class TradingEngine:
     # ==========================================
 
     def _batch_fetch_data(self, symbols: List[str]) -> Dict[str, pd.DataFrame]:
-        """Batch fetch historical data for multiple symbols with caching and retry logic."""
+        """Fetch historical data using Alpaca API first, fall back to yfinance."""
         result = {}
         failed_symbols = []
-        chunk_size = 50
         now = time.time()
         cache_hits = 0
         fetch_count = 0
@@ -1255,73 +1344,133 @@ class TradingEngine:
                     result[symbol] = self._data_cache[symbol]
                     cache_hits += 1
 
-        # If all symbols are cached, return immediately
         if len(result) == len(symbols):
             return result
 
-        # Only fetch symbols not in cache
         symbols_to_fetch = [s for s in symbols if s not in result]
 
-        for i in range(0, len(symbols_to_fetch), chunk_size):
-            chunk = symbols_to_fetch[i:i + chunk_size]
+        # ===== PRIMARY: Alpaca API =====
+        if self.connected and self.api:
             try:
-                if len(chunk) > 1:
-                    ticker_str = " ".join(chunk)
-                    batch_df = yf.download(ticker_str, period="3mo", group_by="ticker",
-                                           threads=True, progress=False)
-                    for symbol in chunk:
-                        try:
-                            if isinstance(batch_df.columns, pd.MultiIndex):
-                                sym_df = batch_df[symbol].copy()
+                from alpaca_trade_api.rest import TimeFrame
+                
+                end_dt = datetime.utcnow()
+                start_dt = end_dt - timedelta(days=90)
+                
+                chunk_size = 50
+                for i in range(0, len(symbols_to_fetch), chunk_size):
+                    chunk = symbols_to_fetch[i:i + chunk_size]
+                    
+                    try:
+                        bars_df = self.api.get_bars(
+                            symbol_or_symbols=chunk,
+                            timeframe=TimeFrame.Day,
+                            start=start_dt.strftime("%Y-%m-%d"),
+                            end=end_dt.strftime("%Y-%m-%d"),
+                            adjustment='raw'
+                        )
+                        
+                        if bars_df is not None and not bars_df.empty:
+                            # Handle multi-symbol DataFrame (has MultiIndex)
+                            if isinstance(bars_df.index, pd.MultiIndex):
+                                for symbol in chunk:
+                                    try:
+                                        if symbol in bars_df.index.get_level_values(0):
+                                            sym_df = bars_df.loc[symbol].copy()
+                                            sym_df.columns = [c.lower() for c in sym_df.columns]
+                                            for drop_col in ['trade_count', 'vwap']:
+                                                if drop_col in sym_df.columns:
+                                                    sym_df = sym_df.drop(columns=[drop_col])
+                                            sym_df.dropna(subset=['close'], inplace=True)
+                                            if not sym_df.empty and len(sym_df) >= 20:
+                                                result[symbol] = sym_df
+                                                self._data_cache[symbol] = sym_df
+                                                self._data_cache_time[symbol] = now
+                                                fetch_count += 1
+                                    except Exception:
+                                        failed_symbols.append(symbol)
                             else:
-                                sym_df = batch_df.copy()
-                            sym_df.columns = [str(c).lower().replace(' ', '_') for c in sym_df.columns]
-                            if 'adj_close' in sym_df.columns:
-                                sym_df = sym_df.drop(columns=['adj_close'])
-                            sym_df.dropna(subset=['close'], inplace=True)
-                            if not sym_df.empty and len(sym_df) >= 20:
-                                result[symbol] = sym_df
-                                self._data_cache[symbol] = sym_df
+                                # Single symbol response
+                                if len(chunk) == 1:
+                                    sym_df = bars_df.copy()
+                                    sym_df.columns = [c.lower() for c in sym_df.columns]
+                                    for drop_col in ['trade_count', 'vwap']:
+                                        if drop_col in sym_df.columns:
+                                            sym_df = sym_df.drop(columns=[drop_col])
+                                    sym_df.dropna(subset=['close'], inplace=True)
+                                    if not sym_df.empty and len(sym_df) >= 20:
+                                        result[chunk[0]] = sym_df
+                                        self._data_cache[chunk[0]] = sym_df
+                                        self._data_cache_time[chunk[0]] = now
+                                        fetch_count += 1
+                    except Exception as e:
+                        self._log_error("alpaca_bars_chunk", str(e))
+                        failed_symbols.extend(chunk)
+                        
+            except ImportError:
+                # TimeFrame not available, fall through to yfinance
+                pass
+            except Exception as e:
+                self._log_error("alpaca_data_fetch", str(e))
+
+        # ===== FALLBACK: yfinance for remaining symbols =====
+        remaining = [s for s in symbols_to_fetch if s not in result]
+        
+        if remaining and YF_AVAILABLE:
+            chunk_size = 50
+            for i in range(0, len(remaining), chunk_size):
+                chunk = remaining[i:i + chunk_size]
+                try:
+                    if len(chunk) > 1:
+                        ticker_string = " ".join(chunk)
+                        batch_df = yf.download(ticker_string, period="3mo", group_by="ticker",
+                                               threads=True, progress=False)
+                        for symbol in chunk:
+                            try:
+                                if isinstance(batch_df.columns, pd.MultiIndex):
+                                    sym_df = batch_df[symbol].copy()
+                                else:
+                                    sym_df = batch_df.copy()
+                                sym_df.columns = [str(col).lower().replace(' ', '_') for col in sym_df.columns]
+                                if 'adj_close' in sym_df.columns:
+                                    sym_df = sym_df.drop(columns=['adj_close'])
+                                if 'close' in sym_df.columns:
+                                    sym_df.dropna(subset=['close'], inplace=True)
+                                if not sym_df.empty and len(sym_df) >= 20:
+                                    result[symbol] = sym_df
+                                    self._data_cache[symbol] = sym_df
+                                    self._data_cache_time[symbol] = now
+                                    fetch_count += 1
+                            except Exception:
+                                failed_symbols.append(symbol)
+                except Exception:
+                    failed_symbols.extend(chunk)
+
+            # Retry failed symbols individually
+            still_failed = [s for s in remaining if s not in result]
+            if still_failed and len(still_failed) <= 20:
+                for symbol in still_failed:
+                    if symbol not in result:
+                        try:
+                            df = yf.Ticker(symbol).history(period="3mo")
+                            if df is not None and not df.empty and len(df) >= 20:
+                                df.columns = [c.lower() for c in df.columns]
+                                if 'adj_close' in df.columns:
+                                    df = df.drop(columns=['adj_close'])
+                                result[symbol] = df
+                                self._data_cache[symbol] = df
                                 self._data_cache_time[symbol] = now
                                 fetch_count += 1
-                            else:
-                                failed_symbols.append(symbol)
                         except Exception:
-                            failed_symbols.append(symbol)
-                else:
-                    symbol = chunk[0]
-                    try:
-                        df = yf.Ticker(symbol).history(period="3mo")
-                        if df is not None and not df.empty and len(df) >= 20:
-                            df.columns = [c.lower() for c in df.columns]
-                            if 'adj_close' in df.columns:
-                                df = df.drop(columns=['adj_close'])
-                            result[symbol] = df
-                            self._data_cache[symbol] = df
-                            self._data_cache_time[symbol] = now
-                            fetch_count += 1
-                        else:
-                            failed_symbols.append(symbol)
-                    except Exception:
-                        failed_symbols.append(symbol)
-            except Exception:
-                failed_symbols.extend(chunk)
+                            pass
 
-        # Retry failed symbols individually (max 10 retries)
-        if failed_symbols and len(failed_symbols) <= 10:
-            for symbol in failed_symbols[:10]:
-                if symbol not in result:
-                    try:
-                        df = yf.Ticker(symbol).history(period="3mo")
-                        if df is not None and not df.empty and len(df) >= 20:
-                            df.columns = [c.lower() for c in df.columns]
-                            if 'adj_close' in df.columns:
-                                df = df.drop(columns=['adj_close'])
-                            result[symbol] = df
-                            self._data_cache[symbol] = df
-                            self._data_cache_time[symbol] = now
-                    except Exception:
-                        pass
+        # Log summary
+        total_requested = len(symbols)
+        total_fetched = len(result)
+        if total_fetched < total_requested * 0.5:
+            self._log_error("data_fetch_warning", 
+                f"Only fetched {total_fetched}/{total_requested} symbols. "
+                f"Cache: {cache_hits}, Alpaca/YF: {fetch_count}, Failed: {len(failed_symbols)}")
 
         # Clean old cache entries (keep only last 500 stocks)
         if len(self._data_cache) > 500:
@@ -1657,9 +1806,10 @@ class TradingEngine:
     # ==========================================
 
     def run_cycle(self):
-        """Run one complete trading cycle."""
+        """Run one complete trading cycle with detailed logging."""
         try:
             self.cycle_count += 1
+            self.consecutive_failures = 0  # Reset on successful cycle start
             self.status_message = f"Running cycle {self.cycle_count}..."
 
             # Check and reset daily counters
@@ -1668,7 +1818,7 @@ class TradingEngine:
             # Check market open
             market = self.is_market_open()
             if not market.get("is_open", False):
-                self.status_message = f"Market closed. Cycle {self.cycle_count} skipped."
+                self.status_message = f"Market closed ({market.get('day_name', '')}). Cycle {self.cycle_count} skipped."
                 return
 
             # Check VIX filter
@@ -1676,6 +1826,7 @@ class TradingEngine:
                 vix_result = self.check_vix()
                 if not vix_result.get("safe_to_trade", True):
                     self.status_message = vix_result.get("reason", "VIX filter active")
+                    self._log_error("vix_block", vix_result.get("reason", ""))
                     return
 
             # Reset daily P&L at start of day
@@ -1689,34 +1840,39 @@ class TradingEngine:
 
             # Scan for signals
             self.scan_all()
+            buy_count = sum(1 for s in self.signals_found if s.get("signal") == "BUY")
+            sell_count = sum(1 for s in self.signals_found if s.get("signal") == "SELL")
 
             # Process BUY signals
+            trades_made = 0
+            signals_blocked = []
             for signal in self.signals_found:
                 if signal["signal"] == "BUY":
-                    # --- BUCKET ALLOCATION CHECK ---
-                    # Check if the user has set this bucket's allocation to 0% (disabled)
+                    # Bucket allocation check
                     bucket = signal.get("bucket", "growth")
                     if bucket == "long_term":
-                        bucket = "dividend"  # Normalize long_term to dividend
+                        bucket = "dividend"
                     
                     bucket_pct_key = f"{bucket}_pct"
                     bucket_pct = self.settings.get(bucket_pct_key, 0)
                     
                     if bucket_pct <= 0:
-                        # User has set this bucket to 0%, skip the trade
-                        self.status_message = f"Skipping {signal['symbol']} — {bucket.title()} bucket allocation is 0%"
+                        signals_blocked.append(f"{signal['symbol']}: {bucket} allocation 0%")
                         continue
-                    # --- END BUCKET ALLOCATION CHECK ---
-
+                    
                     risk = self.evaluate_risk(signal["symbol"], signal)
                     if risk["approved"]:
-                        self.place_order(
+                        order_result = self.place_order(
                             symbol=signal["symbol"],
                             side="buy",
                             bucket=signal.get("bucket"),
                             confidence=signal.get("confidence", 0),
                             reason=signal.get("reason", ""),
                         )
+                        if order_result.get("status") == "success":
+                            trades_made += 1
+                    else:
+                        signals_blocked.append(f"{signal['symbol']}: {', '.join(risk.get('reasons', ['Unknown']))}")
 
             # Check stops and take profits
             stop_results = self.check_stops()
@@ -1769,10 +1925,27 @@ class TradingEngine:
                 pass
 
             self._save_trade_log()
-            self.status_message = f"Cycle {self.cycle_count} complete. Signals: {len(self.signals_found)}, Stops: {len(stop_results)}"
+            
+            # Build detailed status message
+            blocked_msg = ""
+            if signals_blocked:
+                blocked_msg = f" | Blocked: {len(signals_blocked)}"
+                # Log each blocked signal for debugging
+                for b in signals_blocked[:5]:
+                    self._log_error("signal_blocked", b)
+            
+            self.status_message = (
+                f"Cycle {self.cycle_count} complete. "
+                f"Signals: {buy_count}B/{sell_count}S | "
+                f"Trades: {trades_made} | Stops: {len(stop_results)}"
+                f"{blocked_msg}"
+            )
+            self.last_successful_cycle = datetime.utcnow().isoformat()
 
         except Exception as e:
+            self.consecutive_failures += 1
             self.status_message = f"Cycle error: {str(e)}"
+            self._log_error("run_cycle", str(e))
 
     # ==========================================
     # Sell Everything / Move / Redistribute
@@ -3281,11 +3454,13 @@ class TradingEngine:
         if self.reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
             self.status_message = f"Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. Stopping bot."
             self.running = False
+            self._log_error("reconnect_max", f"Max reconnect attempts reached after {self.consecutive_failures} consecutive failures")
             return False
 
         delay = min(self.RECONNECT_BASE_DELAY * (2 ** self.reconnect_count), self.MAX_RECONNECT_DELAY)
         self.reconnect_count += 1
         self.status_message = f"Reconnecting... attempt {self.reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS} (wait {delay}s)"
+        self._log_error("reconnect_attempt", f"Attempt {self.reconnect_count}, waiting {delay}s")
 
         import time as _time
         _time.sleep(delay)
@@ -3295,13 +3470,15 @@ class TradingEngine:
                 account = self._alpaca_api_ref.get_account()
                 if account:
                     self.connected = True
-                    self.reconnect_count = 0
-                    self.consecutive_failures = 0
+                    self.reconnect_count = 0  # Reset on successful reconnect
+                    self.consecutive_failures = 0  # Reset failure counter
                     self.status_message = "Reconnected successfully."
+                    self._log_error("reconnect_success", "Reconnected to Alpaca")
                     return True
         except Exception as e:
             self.consecutive_failures += 1
             self.last_reconnect_time = datetime.utcnow().isoformat()
+            self._log_error("reconnect_fail", str(e))
 
         return False
 
@@ -3590,11 +3767,22 @@ class TradingEngine:
                 return False
 
             api = tradeapi.REST(api_key, secret_key, base_url=base_url, api_version='v2')
-            return self.connect(api)
+            success = self.connect(api)
+            
+            if success:
+                # Store reference for reconnection
+                self._alpaca_api_ref = api
+                self._alpaca_api_key = api_key
+                self._alpaca_secret_key = secret_key
+                self._alpaca_live_mode = live_mode
+                self.reconnect_count = 0
+                self.consecutive_failures = 0
+            
+            return success
         except Exception as e:
             self.status_message = f"Encrypted connection error: {str(e)}"
+            self._log_error("connect_encrypted", str(e))
             return False
-
 
     def deposit_money(self, amount: float, bucket: str) -> Dict:
         """Record a manual deposit into a specific bucket."""
@@ -3638,6 +3826,16 @@ class TradingEngine:
         self._price_cache = {}
         self._price_cache_time = 0
         self._sector_cache = {}
+
+    def invalidate_all_caches(self):
+        """Invalidate ALL caches including data cache. Call this before each trading cycle."""
+        self._position_cache = {}
+        self._position_cache_time = 0
+        self._price_cache = {}
+        self._price_cache_time = 0
+        self._sector_cache = {}
+        self._data_cache = {}
+        self._data_cache_time = {}
 
     def auto_add_new_to_watchlist(self, new_symbols: List[str]) -> Dict:
         """Automatically add newly discovered symbols to the watchlist."""
