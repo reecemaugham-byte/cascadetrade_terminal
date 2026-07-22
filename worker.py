@@ -148,11 +148,21 @@ def run_worker():
                     status_msg = engine.status_message
                     logger.info(f"{username}: {status_msg}")
                     
-                    # Update database using raw SQL (avoids errors)
+                    # Update database with detailed status
                     try:
                         from sqlalchemy import text
+                        buy_count = sum(1 for s in engine.signals_found if s.get("signal") == "BUY")
+                        sell_count = sum(1 for s in engine.signals_found if s.get("signal") == "SELL")
+                        scan_mode = "Universe" if engine.settings.get("scan_full_universe", True) else "Watchlist"
+                        detailed_status = (
+                            f"✅ Cycle #{engine.cycle_count} | "
+                            f"{engine.status_message[:120]} | "
+                            f"🟢{buy_count} 🔴{sell_count} | "
+                            f"P&L: ${engine.daily_pnl:+,.2f} | "
+                            f"Mode: {scan_mode}"
+                        )
                         db.execute(text("UPDATE users SET bot_status=:status, last_login=:now WHERE username=:uname"),
-                                   {"status": status_msg[:200] if status_msg else "Running",
+                                   {"status": detailed_status[:500],
                                     "now": datetime.datetime.now(),
                                     "uname": username})
                         db.commit()
@@ -163,6 +173,15 @@ def run_worker():
                         except Exception:
                             pass
                     
+                    # Also save last cycle timestamp in settings_json for heartbeat
+                    try:
+                        engine.settings["_last_cycle_time"] = datetime.datetime.now().isoformat()
+                        engine.settings["_last_cycle_cycles"] = engine.cycle_count
+                        engine.settings["_last_cycle_signals"] = len(engine.signals_found)
+                        save_settings_to_db_for_worker(username, engine.settings)
+                    except Exception:
+                        pass
+                   
                     # Save settings back to DB
                     save_settings_to_db_for_worker(username, engine.settings)
                     
