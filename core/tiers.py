@@ -138,19 +138,19 @@ TIER_DISPLAY = {
 # ============================================================
 
 def get_user_tier(username: str) -> str:
-    """Get the effective tier for a user."""
+    """Get the effective tier for a user. Uses short-lived session."""
     try:
         from core.database import SessionLocal, get_user_tier as db_get_user_tier
         db = SessionLocal()
         try:
             tier = db_get_user_tier(db, username)
-            return tier
+            return tier if tier else "free"
+        except Exception:
+            return "free"
         finally:
             db.close()
     except Exception:
-        pass
-    return "free"
-
+        return "free"
 
 def has_feature(username: str, feature: str) -> bool:
     """All features unlocked for all users."""
