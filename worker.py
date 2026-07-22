@@ -54,7 +54,6 @@ def stop_engine(username):
             del active_engines[username]
 
 def load_settings_from_db_for_worker(engine, username):
-    """Load settings from DB into the engine."""
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
@@ -71,7 +70,6 @@ def load_settings_from_db_for_worker(engine, username):
     return False
 
 def save_settings_to_db_for_worker(username, settings_dict):
-    """Save engine settings back to DB so Streamlit sees them."""
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
@@ -105,7 +103,18 @@ def run_worker():
                 time.sleep(10)
                 continue
             
-            logger.info(f"\n[{datetime.datetime.now()}] Cycle #{cycle} — {len(active_users)} active bot(s)")
+            logger.info(f"\n[{datetime.datetime.now()}] Cycle #{cycle} - {len(active_users)} active bot(s)")
+            
+            # Heartbeat: update last_login for all active users
+            for user in active_users:
+                username = user.username
+                try:
+                    from sqlalchemy import text
+                    db.execute(text("UPDATE users SET last_login=:now WHERE username=:uname"),
+                               {"now": datetime.datetime.now(), "uname": username})
+                    db.commit()
+                except Exception:
+                    pass
             
             for user in active_users:
                 username = user.username
@@ -118,42 +127,28 @@ def run_worker():
                         if not success:
                             logger.error(f"Connection failed for {username}: {msg}")
                             try:
-                                user.bot_status = f"Error: {msg[:80]}"
+                                from sqlalchemy import text
+                                db.execute(text("UPDATE users SET bot_status=:status WHERE username=:uname"),
+                                           {"status": f"Error: {msg[:80]}", "uname": username})
                                 db.commit()
                             except Exception:
                                 pass
                             continue
                         logger.info(f"Connected {username}")
                     
-                    # Load settings from DB (most up-to-date)
+                    # Load settings
                     load_settings_from_db_for_worker(engine, username)
-                    # Also load from file as fallback
                     engine.load_settings()
-                    # Clear caches for fresh data
                     engine.invalidate_all_caches()
                     
-                    # Auto-build watchlist if too small
-                    watchlist_size = len(engine.settings.get("watchlist", []))
-                    if watchlist_size < 50 and engine.connected:
-                        try:
-                            logger.info(f"Auto-building watchlist for {username} ({watchlist_size} stocks)...")
-                            wl = engine.auto_build_watchlist(top_n=engine.settings.get("watchlist_auto_count", 150))
-                            if wl and len(wl) > watchlist_size:
-                                engine.settings["watchlist_last_built"] = datetime.datetime.now().isoformat()
-                                engine.save_settings()
-                                save_settings_to_db_for_worker(username, engine.settings)
-                                logger.info(f"Auto-built watchlist: {len(wl)} stocks for {username}")
-                        except Exception as e:
-                            logger.warning(f"Auto-build failed for {username}: {e}")
-                    
-                    # Run trading cycle
+                    # Run cycle
                     engine.run_cycle()
                     
-                    # Get status BEFORE closing session
+                    # Get status BEFORE any DB operations
                     status_msg = engine.status_message
                     logger.info(f"{username}: {status_msg}")
                     
-                    # Update database using raw SQL (avoids DetachedInstanceError)
+                    # Update database using raw SQL (avoids errors)
                     try:
                         from sqlalchemy import text
                         db.execute(text("UPDATE users SET bot_status=:status, last_login=:now WHERE username=:uname"),
@@ -162,13 +157,13 @@ def run_worker():
                                     "uname": username})
                         db.commit()
                     except Exception as e:
-                        logger.warning(f"Heartbeat update failed: {e}")
+                        logger.warning(f"DB update failed for {username}: {e}")
                         try:
                             db.rollback()
                         except Exception:
                             pass
                     
-                    # Save settings back to DB in case engine modified them
+                    # Save settings back to DB
                     save_settings_to_db_for_worker(username, engine.settings)
                     
                 except Exception as e:
@@ -187,7 +182,9 @@ def run_worker():
                     if username in active_engines:
                         stop_engine(username)
                     try:
-                        user.bot_status = "Stopped"
+                        from sqlalchemy import text
+                        db.execute(text("UPDATE users SET bot_status='Stopped' WHERE username=:uname"),
+                                   {"uname": username})
                         db.commit()
                     except Exception:
                         pass
@@ -203,7 +200,7 @@ def run_worker():
             except Exception:
                 pass
         
-        # Calculate sleep time based on active engines
+        # Calculate sleep time
         if active_users:
             intervals = []
             for user in active_users:
