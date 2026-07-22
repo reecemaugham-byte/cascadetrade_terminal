@@ -220,15 +220,15 @@ _VIX_CACHE_TTL = 300  # 5 minutes
 MAX_CONSECUTIVE_SCAN_FAILURES = 10
 
 DEFAULT_SETTINGS = {
-    "max_positions": 10,
+    "max_positions": 20,
     "max_position_pct": 0.08,
     "daily_loss_limit_pct": 0.03,
     "stop_loss_pct": 0.05,
     "take_profit_pct": 0.10,
-    "min_confidence": 0.25,
+    "min_confidence": 0.20,
     "scan_interval_min": 8,
     "max_same_sector": 3,
-    "min_rvol": 1.5,
+    "min_rvol": 1.0,
     "dividend_pct": 0.35,
     "growth_pct": 0.35,
     "penny_pct": 0.30,
@@ -288,13 +288,13 @@ DEFAULT_SETTINGS = {
         "AQN", "TELL", "MCEP", "CIG", "VIST",
     ],
     "penny_settings": {
-        "stop_loss_pct": 0.03,
-        "trailing_stop_pct": 0.02,
-        "take_profit_pct": 0.08,
-        "max_position_pct": 0.04,
-        "rsi_oversold": 25,
-        "rsi_overbought": 60,
-        "min_confidence": 0.30,
+        "stop_loss_pct": 0.05,
+        "trailing_stop_pct": 0.03,
+        "take_profit_pct": 0.10,
+        "max_position_pct": 0.06,
+        "rsi_oversold": 30,
+        "rsi_overbought": 65,
+        "min_confidence": 0.20,
         "penny_price_threshold": 5.0,
     },
     "growth_settings": {
@@ -304,17 +304,17 @@ DEFAULT_SETTINGS = {
         "max_position_pct": 0.08,
         "rsi_oversold": 30,
         "rsi_overbought": 65,
-        "min_confidence": 0.25,
+        "min_confidence": 0.20,
     },
     "dividend_settings": {
-        "stop_loss_pct": 0.25,
-        "trailing_stop_pct": 0.15,
-        "take_profit_pct": 0.50,
+        "stop_loss_pct": 0.10,
+        "trailing_stop_pct": 0.07,
+        "take_profit_pct": 0.20,
         "max_position_pct": 0.08,
         "rsi_oversold": 35,
         "rsi_overbought": 70,
-        "min_confidence": 0.20,
-        "min_dividend_yield": 0.03,
+        "min_confidence": 0.15,
+        "min_dividend_yield": 0.02,
         "sell_after_ex_dividend": False,
     },
 }
@@ -348,6 +348,11 @@ class TradingEngine:
         self._data_cache = {}
         self._data_cache_time = {}
         self._data_cache_ttl = 300  # 5 minutes
+
+        # Universe scan cache (30 min TTL so we don't re-fetch every cycle)
+        self._universe_cache = []
+        self._universe_cache_time = 0
+        self._universe_cache_ttl = 1800  # 30 minutes
         self._daily_start_equity = 0.0
         self._trailing_stops = {}
         self._alpaca_api_ref = None
@@ -599,6 +604,10 @@ class TradingEngine:
                 original_capital = data.get("original_capital", 0)
                 if original_capital > 0:
                     self.buckets["original_capital"] = original_capital
+                # Restore trailing stops from saved data
+                saved_trailing_stops = data.get("trailing_stops", {})
+                if saved_trailing_stops:
+                    self._trailing_stops = saved_trailing_stops
             else:
                 self.trade_log = []
                 self.equity_snapshots = []
@@ -621,6 +630,7 @@ class TradingEngine:
                 "buckets": self.buckets,
                 "original_capital": self.buckets.get("original_capital", 0),
                 "last_updated": datetime.utcnow().isoformat(),
+                "trailing_stops": self._trailing_stops,
             }
             with open(trade_file, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -1065,7 +1075,6 @@ class TradingEngine:
 
         if price > 0:
             self._price_cache[symbol] = float(price)
-            self._price_price_time = now
             self._price_cache_time = now
         else:
             self._price_cache[symbol] = 0
@@ -1091,12 +1100,14 @@ class TradingEngine:
             self.status_message = "Not connected — cannot scan"
             return
 
+        vix_result = {"safe_to_trade": True, "vix_value": 0, "reason": ""}
         if self.settings.get("use_vix_filter", True):
             vix_result = self.check_vix()
             if not vix_result.get("safe_to_trade", True):
-                self.status_message = vix_result.get("reason", "VIX filter active")
-                self._log_error("vix_block", vix_result.get("reason", ""))
-                return
+                # When VIX is high, only block BUY signals — still allow SELL signals
+                # This ensures we don't miss stop-losses and take-profits in volatile markets
+                self._log_error("vix_filter", f"VIX {vix_result.get('vix_value', 0):.1f} — BUY signals only allowed for non-penny buckets")
+                # Don't return — instead we'll filter signals below
 
         # Always define watchlist (needed as fallback)
         watchlist = self.settings.get("watchlist", [])
@@ -1104,13 +1115,26 @@ class TradingEngine:
         # Decide which stocks to scan
         use_universe = self.settings.get("scan_full_universe", True)
         if use_universe and self.connected and self.api:
-            universe_size = self.settings.get("universe_scan_count", 300)
-            scan_slice = self.scan_market_universe(top_n=universe_size)
-            if not scan_slice:
-                scan_slice = watchlist
-                self.status_message = f"Universe scan failed, using watchlist ({len(watchlist)} stocks)"
+            # Use cached universe if fresh (< 30 min old)
+            now = time.time()
+            if (self._universe_cache and 
+                (now - self._universe_cache_time) < self._universe_cache_ttl):
+                scan_slice = self._universe_cache
+                self.status_message = f"Scanning {len(scan_slice)} stocks (cached universe)"
+                print(f"[SCAN] Using cached universe: {len(scan_slice)} stocks")
             else:
-                self.status_message = f"Scanning {len(scan_slice)} stocks from universe"
+                universe_size = self.settings.get("universe_scan_count", 300)
+                print(f"[SCAN] Building universe scan for top {universe_size} stocks...")
+                scan_slice = self.scan_market_universe(top_n=universe_size)
+                if scan_slice:
+                    self._universe_cache = scan_slice
+                    self._universe_cache_time = now
+                    self.status_message = f"Scanning {len(scan_slice)} stocks from universe"
+                    print(f"[SCAN] Universe scan complete: {len(scan_slice)} stocks")
+                else:
+                    scan_slice = list(watchlist)
+                    self.status_message = f"Universe scan failed, using watchlist ({len(watchlist)} stocks)"
+                    print(f"[SCAN] Universe scan failed, falling back to watchlist")
         else:
             if not watchlist:
                 self.status_message = "No watchlist configured"
@@ -1123,17 +1147,8 @@ class TradingEngine:
             else:
                 scan_slice = watchlist
 
-        # Stagger scanning for large watchlists when running in background worker
-        # For manual "Scan Once" from UI, scan all stocks at once
-        max_per_cycle = 50
-        if self.running and len(watchlist) > max_per_cycle:
-            # Worker mode: scan a portion each cycle to avoid API rate limits
-            cycle_offset = (self.cycle_count * max_per_cycle) % len(watchlist)
-            scan_slice = watchlist[cycle_offset:cycle_offset + max_per_cycle]
-            self.status_message = f"Scanning {len(scan_slice)}/{len(watchlist)} stocks (cycle {self.cycle_count})"
-        else:
-            # Manual scan or small watchlist: scan everything at once
-            scan_slice = watchlist
+        # Universe scan results are already set above — do NOT override them here
+        # Watchlist staggering only applies when universe scanning is disabled
 
         batch_data = self._batch_fetch_data(scan_slice)
 
@@ -1252,8 +1267,17 @@ class TradingEngine:
                         pass
 
                 # Determine signal direction
+                # VIX filter: during high VIX, only allow SELL signals and penny buys
+                vix_blocking_buys = (self.settings.get("use_vix_filter", True) and 
+                                     not vix_result.get("safe_to_trade", True))
+                
                 if rsi_val < rsi_oversold and confidence >= min_confidence:
-                    signal = "BUY"
+                    if vix_blocking_buys and bucket != "penny":
+                        # High VIX: only allow penny buys (they move independently)
+                        signal = "HOLD"
+                        reason_parts.append("VIX high — buy paused (penny exempt)")
+                    else:
+                        signal = "BUY"
                 elif rsi_val > rsi_overbought and confidence >= min_confidence:
                     signal = "SELL"
                 elif confidence >= 0.15:
@@ -1274,7 +1298,15 @@ class TradingEngine:
             except Exception:
                 continue
 
-        self.status_message = f"Scan complete: {len(self.signals_found)} signals found"
+        buy_count = sum(1 for s in self.signals_found if s.get("signal") == "BUY")
+        sell_count = sum(1 for s in self.signals_found if s.get("signal") == "SELL")
+        hold_count = len(self.signals_found) - buy_count - sell_count
+        self.status_message = (
+            f"Scan #{self.cycle_count}: {len(scan_slice)} scanned, "
+            f"{buy_count} BUY / {sell_count} SELL / "
+            f"{len(self.signals_found) - buy_count - sell_count} HOLD"
+        )
+        print(f"[SCAN] {self.status_message}")
 
     def evaluate_risk(self, symbol: str, signal_data: Dict) -> Dict:
         """Evaluate if a trade meets risk criteria. Logs every rejection reason."""
@@ -1369,10 +1401,10 @@ class TradingEngine:
                 result["reasons"].append(f"Max same sector ({sector_count}/{max_same_sector} in {target_sector})")
                 return result
 
-            # VIX filter check
+            # VIX filter check — penny stocks exempt during high VIX
             if self.settings.get("use_vix_filter", True):
                 vix_result = self.check_vix()
-                if not vix_result.get("safe_to_trade", True):
+                if not vix_result.get("safe_to_trade", True) and bucket != "penny":
                     result["reasons"].append(vix_result.get("reason", "VIX filter active"))
                     return result
 
@@ -1565,24 +1597,23 @@ class TradingEngine:
 
             equity = account.get("equity", 0)
             buying_power = account.get("buying_power", 0)
-            price = signal_data_price = 0
+            price = 0
 
             # Get price
-            if side == "buy":
-                price = self._get_current_price(symbol)
-                if price <= 0:
-                    try:
-                        ticker = yf.Ticker(symbol)
-                        info = ticker.info or {}
-                        price = info.get("currentPrice", info.get("regularMarketPrice", 0))
-                        if not price:
-                            hist = ticker.history(period="5d")
-                            if not hist.empty:
-                                price = float(hist['Close'].iloc[-1])
-                    except Exception:
-                        pass
-                if price <= 0:
-                    return {"status": "error", "message": f"Cannot get price for {symbol}"}
+            price = self._get_current_price(symbol) if side == "buy" else 0
+            if side == "buy" and price <= 0:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    info = ticker.info or {}
+                    price = info.get("currentPrice", info.get("regularMarketPrice", 0))
+                    if not price:
+                        hist = ticker.history(period="5d")
+                        if not hist.empty:
+                            price = float(hist['Close'].iloc[-1])
+                except Exception:
+                    pass
+            if price <= 0:
+                return {"status": "error", "message": f"Cannot get price for {symbol}"}
 
             # Calculate quantity
             if qty is None or qty <= 0:
@@ -1882,13 +1913,15 @@ class TradingEngine:
                 self.status_message = f"Market closed ({market.get('day_name', '')}). Cycle {self.cycle_count} skipped."
                 return
 
-            # Check VIX filter
+            # Check VIX filter — only block BUYS, not sells/stops
+            vix_result = {"safe_to_trade": True, "vix_value": 0, "reason": ""}
             if self.settings.get("use_vix_filter", True):
                 vix_result = self.check_vix()
+                # VIX filter only blocks new buys, NOT stop-losses or take-profits
+                # Penny stocks often move independently of VIX
                 if not vix_result.get("safe_to_trade", True):
-                    self.status_message = vix_result.get("reason", "VIX filter active")
-                    self._log_error("vix_block", vix_result.get("reason", ""))
-                    return
+                    self.status_message = f"VIX {vix_result.get('vix_value', 0):.1f}: Buys paused, stops still active"
+                    # Don't return — still process sells and stops below
 
             # Always define watchlist (needed as fallback)
             watchlist = self.settings.get("watchlist", [])
@@ -1902,8 +1935,10 @@ class TradingEngine:
                     self._daily_start_equity = account.get("equity", 0)
                     self.daily_pnl = 0.0
 
-            # Scan for signals
+            # Scan for signals and record them
             self.scan_all()
+            for sig in self.signals_found:
+                self.record_signal(sig)
             buy_count = sum(1 for s in self.signals_found if s.get("signal") == "BUY")
             sell_count = sum(1 for s in self.signals_found if s.get("signal") == "SELL")
 
@@ -3154,6 +3189,25 @@ class TradingEngine:
                 "auto_extract": self.settings.get("auto_extract_profits", True),
             }
 
+    def get_worker_status(self) -> Dict:
+        """Return detailed worker status for UI display."""
+        try:
+            status = self.get_status()
+            status["last_cycle_time"] = self.last_successful_cycle or "Never"
+            status["consecutive_failures"] = self.consecutive_failures
+            status["scan_mode"] = "Universe" if self.settings.get("scan_full_universe", True) else "Watchlist"
+            status["universe_count"] = self.settings.get("universe_scan_count", 300)
+            status["watchlist_count"] = len(self.settings.get("watchlist", []))
+            status["universe_cache_size"] = len(self._universe_cache) if hasattr(self, '_universe_cache') else 0
+            status["universe_cache_age_min"] = round((time.time() - getattr(self, '_universe_cache_time', 0)) / 60, 1) if getattr(self, '_universe_cache_time', 0) > 0 else 0
+            if self._daily_start_equity > 0:
+                status["daily_pnl_pct"] = round((self.daily_pnl / self._daily_start_equity) * 100, 2)
+            else:
+                status["daily_pnl_pct"] = 0
+            return status
+        except Exception as e:
+            return {"connected": self.connected, "running": self.running, "error": str(e)}
+
     def send_alert(self, message: str):
         """Send a Discord alert with privacy mode support."""
         try:
@@ -3454,18 +3508,69 @@ class TradingEngine:
                 reverse=True
             )
 
-            # Always include key stocks
-            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
-                         "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY"]
+            # Get bucket allocations to prioritize relevant stocks
+            div_pct = self.settings.get("dividend_pct", 0.35)
+            gro_pct = self.settings.get("growth_pct", 0.35)
+            pen_pct = self.settings.get("penny_pct", 0.30)
+            penny_threshold = self.settings.get("penny_settings", {}).get("penny_price_threshold", 5.0)
+            min_div_yield = self.settings.get("dividend_settings", {}).get("min_dividend_yield", 0.03)
 
+            # Categorize by price for bucket-aware selection
+            penny_stocks = []    # price < penny_threshold
+            growth_stocks = []   # price >= penny_threshold, mid-range
+            dividend_stocks = [] # known dividend payers or high yield
+            other_stocks = []
+
+            for sym in sorted_symbols:
+                price = symbol_data[sym].get("price", 0)
+                if price <= 0:
+                    other_stocks.append(sym)
+                elif price < penny_threshold:
+                    penny_stocks.append(sym)
+                elif sym in DIVIDEND_STOCKS:
+                    dividend_stocks.append(sym)
+                elif price >= 5:
+                    growth_stocks.append(sym)
+                else:
+                    other_stocks.append(sym)
+
+            # Build result proportional to bucket allocation
             result = []
             seen = set()
+
+            # Always include key stocks first
+            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
+                         "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY"]
             for sym in must_have:
                 if sym not in seen and sym in symbol_data:
                     result.append(sym)
                     seen.add(sym)
 
-            for sym in sorted_symbols:
+            # Allocate slots proportional to bucket percentages
+            penny_slots = max(20, int(top_n * pen_pct))
+            growth_slots = max(40, int(top_n * gro_pct))
+            dividend_slots = max(20, int(top_n * div_pct))
+
+            # Fill penny stocks
+            for sym in penny_stocks:
+                if sym not in seen and len([s for s in result if s not in must_have and symbol_data.get(s, {}).get("price", 999) < penny_threshold]) < penny_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill dividend stocks
+            for sym in dividend_stocks:
+                if sym not in seen and len([s for s in result if s in DIVIDEND_STOCKS]) < dividend_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill growth stocks
+            for sym in growth_stocks:
+                if sym not in seen and len([s for s in result if s not in DIVIDEND_STOCKS and symbol_data.get(s, {}).get("price", 0) >= penny_threshold]) < growth_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill remaining with other stocks by volume
+            for sym in other_stocks + [s for s in sorted_symbols if s not in seen]:
                 if sym not in seen:
                     result.append(sym)
                     seen.add(sym)
@@ -3772,11 +3877,17 @@ class TradingEngine:
         return False
 
     def _check_and_reset_daily(self):
-        """Reset daily counters if a new trading day has started."""
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        if self.daily_reset_date != today:
+        """Reset daily counters if a new US trading day has started."""
+        try:
+            from zoneinfo import ZoneInfo
+            eastern = ZoneInfo("US/Eastern")
+            today_et = datetime.now(eastern).strftime("%Y-%m-%d")
+        except Exception:
+            today_et = datetime.utcnow().strftime("%Y-%m-%d")
+        
+        if self.daily_reset_date != today_et:
             self.daily_pnl = 0.0
-            self.daily_reset_date = today
+            self.daily_reset_date = today_et
             account = self.get_account_info()
             if "error" not in account:
                 self._daily_start_equity = account.get("equity", 0)
