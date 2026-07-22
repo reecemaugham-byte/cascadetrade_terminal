@@ -163,6 +163,24 @@ def run_worker():
                     # Invalidate all caches before each cycle for fresh data
                     engine.invalidate_all_caches()
                     
+                    # Auto-build watchlist if it's too small or stale
+                    watchlist_size = len(engine.settings.get("watchlist", []))
+                    wl_last_built = engine.settings.get("watchlist_last_built", "")
+                    needs_build = watchlist_size < 50 or not wl_last_built
+                    
+                    if needs_build and engine.connected:
+                        try:
+                            top_n = engine.settings.get("watchlist_auto_count", 100)
+                            logger.info(f"📋 {username}: Auto-building watchlist ({watchlist_size} stocks, needs >= 50)...")
+                            wl = engine.auto_build_watchlist(top_n=top_n)
+                            if wl:
+                                engine.settings["watchlist_last_built"] = datetime.datetime.utcnow().isoformat()
+                                engine.save_settings()
+                                save_settings_to_db_for_worker(username, engine.settings)
+                                logger.info(f"✅ {username}: Auto-built watchlist with {len(wl)} stocks")
+                        except Exception as e:
+                            logger.warning(f"⚠️ {username}: Auto-build failed: {e}")
+                    
                     # Log key settings for debugging
                     watchlist = engine.settings.get("watchlist", [])
                     logger.info(f"📋 {username}: Watchlist has {len(watchlist)} stocks")
