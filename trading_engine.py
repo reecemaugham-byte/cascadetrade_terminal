@@ -248,6 +248,8 @@ DEFAULT_SETTINGS = {
     "watchlist_last_built": "",
     "penny_price_threshold": 5.0,
     "min_dividend_yield": 0.03,
+    "scan_full_universe": True,
+    "universe_scan_count": 300,
     "watchlist": [
         # === MEGA CAP (Tech) ===
         "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
@@ -1095,10 +1097,33 @@ class TradingEngine:
                 self.status_message = vix_result.get("reason", "VIX filter active")
                 return
 
-        watchlist = self.settings.get("watchlist", [])
-        if not watchlist:
-            self.status_message = "No watchlist configured"
-            return
+        # Use dynamic universe scan if enabled, otherwise use watchlist
+        use_universe = self.settings.get("scan_full_universe", True)
+        if use_universe and self.connected and self.api:
+            # Dynamically scan the top stocks from Alpaca
+            universe_size = self.settings.get("universe_scan_count", 300)
+            scan_slice = self.scan_market_universe(top_n=universe_size)
+            if not scan_slice:
+                # Fallback to watchlist if universe scan fails
+                watchlist = self.settings.get("watchlist", [])
+                scan_slice = watchlist
+                self.status_message = f"Universe scan failed, using watchlist ({len(watchlist)} stocks)"
+            else:
+                self.status_message = f"Scanning {len(scan_slice)} stocks from universe"
+        else:
+            watchlist = self.settings.get("watchlist", [])
+            if not watchlist:
+                self.status_message = "No watchlist configured"
+                return
+            
+            # Stagger scanning for large watchlists
+            max_per_cycle = 50
+            if len(watchlist) > max_per_cycle:
+                cycle_offset = (self.cycle_count * max_per_cycle) % len(watchlist)
+                scan_slice = watchlist[cycle_offset:cycle_offset + max_per_cycle]
+                self.status_message = f"Scanning {len(scan_slice)}/{len(watchlist)} stocks (cycle {self.cycle_count})"
+            else:
+                scan_slice = watchlist
 
         # Stagger scanning for large watchlists when running in background worker
         # For manual "Scan Once" from UI, scan all stocks at once
@@ -3319,6 +3344,139 @@ class TradingEngine:
             print(f"[WATCHLIST] FATAL ERROR: {e}")
             self.status_message = f"Auto watchlist error: {e}"
             self._log_error("auto_watchlist", str(e))
+            return self.settings.get("watchlist", [])
+
+    def scan_market_universe(self, top_n: int = 500, min_price: float = 5.0, max_price: float = 500.0) -> list:
+        """Scan the entire Alpaca universe and return the top stocks by volume.
+        This replaces the static watchlist with dynamic market scanning."""
+        try:
+            if not self.connected or not self.api:
+                self.status_message = "Not connected — cannot scan universe"
+                return self.settings.get("watchlist", [])
+
+            print(f"[UNIVERSE] Starting universe scan for top {top_n} stocks...")
+
+            # Step 1: Get all tradable assets
+            try:
+                assets = self.api.list_assets(status="active")
+            except Exception as e:
+                print(f"[UNIVERSE] Error listing assets: {e}")
+                return self.settings.get("watchlist", [])
+
+            # Filter to major exchanges only
+            exchanges = ["NASDAQ", "NYSE", "ARCA", "AMEX", "BATS"]
+            tradable = []
+            for asset in assets:
+                sym = getattr(asset, 'symbol', '')
+                if not sym or len(sym) > 5:
+                    continue
+                if getattr(asset, 'exchange', '') not in exchanges:
+                    continue
+                if not getattr(asset, 'tradable', False):
+                    continue
+                tradable.append(sym)
+
+            print(f"[UNIVERSE] Found {len(tradable)} tradable symbols")
+
+            # Step 2: Get bar data for chunks of symbols
+            from alpaca_trade_api.rest import TimeFrame
+            from datetime import timedelta
+
+            end_dt = datetime.utcnow()
+            start_dt = end_dt - timedelta(days=5)
+
+            symbol_data = {}
+            chunk_size = 50
+            total_chunks = min(len(tradable), top_n * 5) // chunk_size + 1
+            processed = 0
+            failed = 0
+
+            # Only fetch data for top_n * 5 symbols (most likely to have volume)
+            symbols_to_process = tradable[:top_n * 5]
+
+            for i in range(0, len(symbols_to_process), chunk_size):
+                chunk = symbols_to_process[i:i + chunk_size]
+                
+                try:
+                    bars_df = self.api.get_bars(
+                        symbol_or_symbols=chunk,
+                        timeframe=TimeFrame.Day,
+                        start=start_dt.strftime("%Y-%m-%d"),
+                        end=end_dt.strftime("%Y-%m-%d"),
+                        adjustment='raw'
+                    )
+
+                    if bars_df is not None and not bars_df.empty:
+                        if isinstance(bars_df.index, pd.MultiIndex):
+                            for sym in chunk:
+                                try:
+                                    if sym in bars_df.index.get_level_values(0):
+                                        sym_df = bars_df.loc[sym]
+                                        if not sym_df.empty and len(sym_df) >= 2:
+                                            price = float(sym_df['close'].iloc[-1])
+                                            volume = float(sym_df['volume'].mean())
+                                            if min_price <= price <= max_price and volume > 0:
+                                                symbol_data[sym] = {"price": price, "volume": volume}
+                                                processed += 1
+                                except Exception:
+                                    continue
+                        else:
+                            if len(chunk) == 1 and not bars_df.empty and len(bars_df) >= 2:
+                                price = float(bars_df['close'].iloc[-1])
+                                volume = float(bars_df['volume'].mean())
+                                if min_price <= price <= max_price and volume > 0:
+                                    symbol_data[chunk[0]] = {"price": price, "volume": volume}
+                                    processed += 1
+
+                    # Rate limiting: small delay between chunks
+                    time.sleep(0.15)
+
+                except Exception:
+                    failed += 1
+                    continue
+
+                # Progress update every 10 chunks
+                chunk_num = i // chunk_size + 1
+                if chunk_num % 10 == 0:
+                    print(f"[UNIVERSE] Processed {processed} stocks ({chunk_num}/{total_chunks} chunks, {failed} failed)")
+
+            print(f"[UNIVERSE] Finished: {processed} stocks with data, {failed} chunks failed")
+
+            if not symbol_data:
+                print("[UNIVERSE] No data obtained from Alpaca, using current watchlist")
+                return self.settings.get("watchlist", [])
+
+            # Step 3: Sort by volume and return top N
+            sorted_symbols = sorted(
+                symbol_data.keys(),
+                key=lambda s: symbol_data[s].get("volume", 0),
+                reverse=True
+            )
+
+            # Always include key stocks
+            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
+                         "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY"]
+
+            result = []
+            seen = set()
+            for sym in must_have:
+                if sym not in seen and sym in symbol_data:
+                    result.append(sym)
+                    seen.add(sym)
+
+            for sym in sorted_symbols:
+                if sym not in seen:
+                    result.append(sym)
+                    seen.add(sym)
+                if len(result) >= top_n + len(must_have):
+                    break
+
+            print(f"[UNIVERSE] Returning {len(result)} stocks (target was {top_n})")
+            return result
+
+        except Exception as e:
+            print(f"[UNIVERSE] Fatal error: {e}")
+            self._log_error("universe_scan", str(e))
             return self.settings.get("watchlist", [])
 
     # ==========================================
