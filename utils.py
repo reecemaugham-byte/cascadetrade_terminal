@@ -201,6 +201,21 @@ def bucket_display_name(bucket: str) -> str:
 # ==========================================
 # MARKET HOURS
 # ==========================================
+US_MARKET_HOLIDAYS = {
+    # 2024
+    "2024-01-01", "2024-01-15", "2024-02-19", "2024-03-29",
+    "2024-05-27", "2024-06-19", "2024-07-04", "2024-09-02",
+    "2024-11-28", "2024-12-25",
+    # 2025
+    "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18",
+    "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
+    "2025-11-27", "2025-12-25",
+    # 2026
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+    "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
+    "2026-11-26", "2026-12-25",
+}
+
 def is_market_open() -> Dict:
     """Check if the US stock market is currently open."""
     try:
@@ -210,8 +225,9 @@ def is_market_open() -> Dict:
         market_open = dt_time(9, 30)
         market_close = dt_time(16, 0)
         is_weekday = now_et.weekday() < 5
+        is_holiday = now_et.strftime("%Y-%m-%d") in US_MARKET_HOLIDAYS
         is_trading_hours = market_open <= now_et.time() <= market_close
-        is_open = is_weekday and is_trading_hours
+        is_open = is_weekday and is_trading_hours and not is_holiday
 
         if is_weekday and now_et.time() < market_open:
             next_open = datetime.combine(now_et.date(), market_open)
