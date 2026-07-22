@@ -2877,7 +2877,18 @@ with tab3:
         wl_count = len(current_wl)
         
         st.caption(f"Current watchlist: **{wl_count}** stocks | Last built: {wl_last_built[:10] if wl_last_built and wl_last_built != 'Never' else 'Never'}")
-        
+
+        # === NEW: Universe scan toggle ===
+        use_universe = st.checkbox("🌐 Scan Full Market Universe", value=True, key="scan_universe_toggle",
+                                    help="Scan the entire Alpaca market instead of just your watchlist. Finds more opportunities but takes longer.")
+        engine.settings["scan_full_universe"] = use_universe
+        universe_count = st.slider("How many stocks to scan", 100, 1000,
+                                   engine.settings.get("universe_scan_count", 300), step=50,
+                                   key="universe_count_slider",
+                                   help="More stocks = more opportunities but longer scan time (1-3 minutes)")
+        engine.settings["universe_scan_count"] = universe_count
+        # === END NEW ===
+
         wl_mode = st.radio("Choose:", ["Manual (type yourself)", "Auto (Alpaca Universe - scan best stocks)"], 
                            index=1 if engine.settings.get("watchlist_auto") else 0, horizontal=True,
                            key="wl_mode_radio")
