@@ -9,47 +9,86 @@ from datetime import datetime, timedelta
 import time
 import stripe
 import json
-# --- FORCE DATABASE MIGRATION FOR v2.0 ---
-import sqlalchemy
-from core.database import engine
+# --- RUN DATABASE MIGRATIONS ---
+from core.database import migrate_db
 try:
-    with engine.connect() as conn:
-        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS trading_mode VARCHAR DEFAULT 'paper'"))
-        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_running BOOLEAN DEFAULT FALSE"))
-        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_status VARCHAR DEFAULT 'Stopped'"))
-        conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN IF NOT EXISTS settings_json TEXT"))
-        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'free' WHERE tier = 'starter'"))
-        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'live_trading' WHERE tier = 'pro'"))
-        conn.execute(sqlalchemy.text("UPDATE users SET tier = 'pro_trader' WHERE tier = 'fund'"))
-        conn.commit()
+    migrate_db()
 except Exception:
     pass
-# --- END FORCE MIGRATION ---
+# --- END MIGRATIONS ---
 
 # ==========================================
 # SETTINGS PERSISTENCE (Save/Load from DB)
 # ==========================================
 def save_settings_to_db(username, settings_dict):
+    """Save settings to database with verification."""
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
         if user:
-            user.settings_json = json.dumps(settings_dict)
-            db.commit()
+            if hasattr(user, 'settings_json'):
+                user.settings_json = json.dumps(settings_dict)
+                db.commit()
+                # Verify the save worked
+                db.refresh(user)
+                if not user.settings_json:
+                    # Column exists but save failed — try raw SQL
+                    try:
+                        db.execute(text("UPDATE users SET settings_json = :json WHERE username = :uname"),
+                                   {"json": json.dumps(settings_dict), "uname": username})
+                        db.commit()
+                    except Exception as e2:
+                        st.error(f"Settings save failed: {e2}")
+            else:
+                # Column doesn't exist in model — use raw SQL
+                try:
+                    db.execute(text("UPDATE users SET settings_json = :json WHERE username = :uname"),
+                               {"json": json.dumps(settings_dict), "uname": username})
+                    db.commit()
+                except Exception as e3:
+                    st.error(f"Settings save failed (raw SQL): {e3}")
         db.close()
     except Exception as e:
         print(f"Error saving settings: {e}")
 
 def load_settings_from_db(username, engine):
+    """Load settings from database. Tries ORM first, then raw SQL."""
     try:
         db = SessionLocal()
         user = db.query(User).filter(User.username == username).first()
+        settings_loaded = False
+        
+        # Try ORM first
         if user and hasattr(user, 'settings_json') and user.settings_json:
-            saved = json.loads(user.settings_json)
-            # Deep merge so new defaults are preserved
-            engine._deep_merge(engine.settings, saved)
-            engine.save_settings()
+            try:
+                saved = json.loads(user.settings_json)
+                engine._deep_merge(engine.settings, saved)
+                engine.save_settings()
+                settings_loaded = True
+            except Exception as e:
+                print(f"Error parsing settings_json: {e}")
+        
+        # Fallback: try raw SQL in case ORM model doesn't have the column
+        if not settings_loaded:
+            try:
+                result = db.execute(text("SELECT settings_json FROM users WHERE username = :uname"),
+                                    {"uname": username})
+                row = result.fetchone()
+                if row and row[0]:
+                    saved = json.loads(row[0])
+                    engine._deep_merge(engine.settings, saved)
+                    engine.save_settings()
+                    settings_loaded = True
+            except Exception as e:
+                print(f"Error loading settings via SQL: {e}")
+        
         db.close()
+        
+        if settings_loaded:
+            print(f"✅ Settings loaded from DB for {username}")
+        else:
+            print(f"⚠️ No settings found in DB for {username}, using defaults")
+            
     except Exception as e:
         print(f"Error loading settings: {e}")
 
@@ -407,6 +446,9 @@ if not st.session_state.authenticated:
                     st.session_state.trading_engine.set_username(_username)
                     st.session_state.trading_engine._load_trade_log()
                     load_settings_from_db(_username, st.session_state.trading_engine)
+                    # Verify settings loaded correctly
+                    loaded_pct = st.session_state.trading_engine.settings.get("penny_pct", 0.30)
+                    print(f"Settings loaded for {_username}: penny_pct={loaded_pct}")
 
                     if AUDIT_AVAILABLE:
                         try:
@@ -2727,6 +2769,10 @@ with tab3:
             engine.settings["penny_settings"] = penny
             engine.save_settings()
             save_settings_to_db(st.session_state.username, engine.settings)
+            # Verify the save worked
+            saved_pct = engine.settings.get("penny_pct", 0)
+            if saved_pct != penny_alloc / 100:
+                st.error(f"⚠️ Penny allocation failed to save! Expected {penny_alloc/100}, got {saved_pct}")
 
         with st.expander("🔵 Growth Stock Settings", expanded=False):
             growth_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("growth_pct", 0.35) * 100), step=1, format="%d%%", key="growth_alloc_slider", help="What percentage of your capital goes to growth stocks. Set to 0% to disable growth trading.")
@@ -2756,6 +2802,10 @@ with tab3:
             engine.settings["growth_settings"] = growth
             engine.save_settings()
             save_settings_to_db(st.session_state.username, engine.settings)
+            # Verify the save worked
+            saved_pct = engine.settings.get("growth_pct", 0)
+            if saved_pct != growth_alloc / 100:
+                st.error(f"⚠️ Growth allocation failed to save! Expected {growth_alloc/100}, got {saved_pct}")
 
         with st.expander("🟢 Dividend Stock Settings", expanded=False):
             dividend_alloc = st.slider("💰 Capital Allocation %", 0, 100, int(engine.settings.get("dividend_pct", 0.35) * 100), step=1, format="%d%%", key="dividend_alloc_slider", help="What percentage of your capital goes to dividend stocks. Set to 0% to disable dividend trading.")
@@ -2787,7 +2837,10 @@ with tab3:
             engine.settings["dividend_settings"] = dividend
             engine.save_settings()
             save_settings_to_db(st.session_state.username, engine.settings)
-
+            saved_pct = engine.settings.get("dividend_pct", 0)
+            if saved_pct != dividend_alloc / 100:
+                st.error(f"⚠️ Dividend allocation failed to save! Expected {dividend_alloc/100}, got {saved_pct}")
+    
         with st.expander("🔬 Advanced Signals", expanded=False):
             st.caption("MACD, Bollinger, VIX filter, ATR position sizing.")
 
