@@ -3237,163 +3237,248 @@ class TradingEngine:
 
     def auto_build_watchlist(self, top_n: int = 100, min_price: float = 5.0,
                              max_price: float = 500.0) -> List[str]:
-        """Build an automatic watchlist from the Alpaca universe."""
+        """Build an automatic watchlist from the Alpaca universe using snapshots (fast)."""
         try:
             if not self.connected or not self.api:
                 self.status_message = "Not connected — cannot build watchlist"
                 return self.settings.get("watchlist", [])
 
+            print(f"[WATCHLIST] Starting snapshot-based build: target={top_n}, min_price={min_price}, max_price={max_price}")
+
             # Step 1: Get all tradable assets from Alpaca
-            self.status_message = "Fetching Alpaca asset list..."
-            print(f"[WATCHLIST] Starting build: target={top_n}, min_price={min_price}, max_price={max_price}")
-            
             try:
                 assets = self.api.list_assets(status="active")
-                print(f"[WATCHLIST] Got {len(assets)} assets from Alpaca")
             except Exception as e:
                 print(f"[WATCHLIST] Error listing assets: {e}")
                 self._log_error("list_assets", str(e))
-                assets = []
+                return self.settings.get("watchlist", [])
 
+            exchanges = ["NASDAQ", "NYSE", "ARCA", "AMEX", "BATS"]
             tradable = []
             for asset in assets:
                 sym = getattr(asset, 'symbol', '')
                 if not sym or len(sym) > 5:
                     continue
-                if getattr(asset, 'exchange', '') not in ["NASDAQ", "NYSE", "ARCA", "AMEX", "BATS"]:
+                if getattr(asset, 'exchange', '') not in exchanges:
                     continue
                 if not getattr(asset, 'tradable', False):
                     continue
                 tradable.append(sym)
 
             if not tradable:
-                print("[WATCHLIST] No tradable symbols found, using default watchlist")
+                print("[WATCHLIST] No tradable symbols found")
                 self._log_error("watchlist_build", "No tradable symbols found")
-                new_watchlist = self.settings.get("watchlist", DEFAULT_SETTINGS["watchlist"])
-                self.settings["watchlist"] = new_watchlist
-                self.settings["watchlist_auto"] = True
-                self.save_settings()
-                return new_watchlist
+                return self.settings.get("watchlist", [])
 
-            # Limit the number we try to get price data for
-            max_to_fetch = min(len(tradable), top_n * 3)
-            symbols_to_fetch = tradable[:max_to_fetch]
+            print(f"[WATCHLIST] Found {len(tradable)} tradable symbols, fetching snapshots...")
 
-            print(f"[WATCHLIST] Found {len(tradable)} tradable symbols, fetching price data for {len(symbols_to_fetch)}")
-
-            # Step 2: Fetch price/volume data using Alpaca bars
+            # Step 2: Get snapshots in batches (MUCH faster than bars)
             symbol_data = {}
-
-            if self.connected and self.api:
+            batch_size = 500  # Snapshots support large batches
+            
+            for i in range(0, len(tradable), batch_size):
+                batch = tradable[i:i + batch_size]
                 try:
-                    from alpaca_trade_api.rest import TimeFrame
+                    snapshots = self.api.get_snapshots(batch)
                     
-                    end_dt = datetime.utcnow()
-                    start_dt = end_dt - timedelta(days=5)
+                    if snapshots:
+                        for sym, snap in snapshots.items():
+                            try:
+                                daily_bar = getattr(snap, 'daily_bar', None) or getattr(snap, 'dailyBar', None)
+                                prev_bar = getattr(snap, 'prev_daily_bar', None) or getattr(snap, 'prevDailyBar', None)
+                                latest_trade = getattr(snap, 'latest_trade', None) or getattr(snap, 'latestTrade', None)
+                                latest_quote = getattr(snap, 'latest_quote', None) or getattr(snap, 'latestQuote', None)
+                                
+                                # Get price from trade, then quote, then bar
+                                price = 0.0
+                                volume = 0.0
+                                
+                                if latest_trade:
+                                    price = float(getattr(latest_trade, 'price', 0) or 0)
+                                
+                                if price <= 0 and latest_quote:
+                                    bid = float(getattr(latest_quote, 'bid_price', 0) or getattr(latest_quote, 'bid', 0) or 0)
+                                    ask = float(getattr(latest_quote, 'ask_price', 0) or getattr(latest_quote, 'ask', 0) or 0)
+                                    if bid > 0 and ask > 0:
+                                        price = (bid + ask) / 2
+                                    elif ask > 0:
+                                        price = ask
+                                    elif bid > 0:
+                                        price = bid
+                                
+                                if price <= 0 and daily_bar:
+                                    price = float(getattr(daily_bar, 'close', 0) or 0)
+                                
+                                if price <= 0 and prev_bar:
+                                    price = float(getattr(prev_bar, 'close', 0) or 0)
+                                
+                                # Get volume from daily bar, then prev bar
+                                if daily_bar:
+                                    volume = float(getattr(daily_bar, 'volume', 0) or 0)
+                                
+                                if volume <= 0 and prev_bar:
+                                    volume = float(getattr(prev_bar, 'volume', 0) or 0)
+                                
+                                if min_price <= price <= max_price and volume > 0:
+                                    symbol_data[sym] = {"price": price, "volume": volume}
+                                    
+                            except Exception:
+                                continue
                     
-                    chunk_size = 20
-                    total_chunks = (len(symbols_to_fetch) + chunk_size - 1) // chunk_size
-                    successful_chunks = 0
-                    failed_chunks = 0
+                    print(f"[WATCHLIST] Snapshot batch {i // batch_size + 1}: got data for {len(symbol_data)} stocks so far")
                     
-                    for chunk_idx in range(total_chunks):
-                        start = chunk_idx * chunk_size
-                        end = min(start + chunk_size, len(symbols_to_fetch))
-                        chunk = symbols_to_fetch[start:end]
-                        
-                        try:
-                            bars_df = self.api.get_bars(
-                                symbol_or_symbols=chunk,
-                                timeframe=TimeFrame.Day,
-                                start=start_dt.strftime("%Y-%m-%d"),
-                                end=end_dt.strftime("%Y-%m-%d"),
-                                adjustment='raw'
-                            )
-                            
-                            if bars_df is not None and not bars_df.empty:
-                                if isinstance(bars_df.index, pd.MultiIndex):
-                                    for sym in chunk:
-                                        try:
-                                            if sym in bars_df.index.get_level_values(0):
-                                                sym_df = bars_df.loc[sym]
-                                                if not sym_df.empty and len(sym_df) >= 2:
-                                                    price = float(sym_df['close'].iloc[-1])
-                                                    volume = float(sym_df['volume'].mean())
-                                                    if min_price <= price <= max_price and volume > 0:
-                                                        symbol_data[sym] = {"price": price, "volume": volume}
-                                        except Exception:
-                                            continue
-                                else:
-                                    if len(chunk) == 1 and not bars_df.empty and len(bars_df) >= 2:
-                                        price = float(bars_df['close'].iloc[-1])
-                                        volume = float(bars_df['volume'].mean())
-                                        if min_price <= price <= max_price and volume > 0:
-                                            symbol_data[chunk[0]] = {"price": price, "volume": volume}
-
-                            successful_chunks += 1
-                            
-                            # Small delay between chunks to avoid rate limits
-                            if chunk_idx < total_chunks - 1:
-                                time.sleep(0.2)
-
-                        except Exception as e:
-                            failed_chunks += 1
-                            continue
-
-                    print(f"[WATCHLIST] Alpaca bars: {successful_chunks} successful chunks, {failed_chunks} failed chunks")
-                    print(f"[WATCHLIST] Got price data for {len(symbol_data)} symbols from Alpaca")
-
-                except ImportError:
-                    print("[WATCHLIST] TimeFrame not available from alpaca_trade_api")
                 except Exception as e:
-                    print(f"[WATCHLIST] Alpaca bars error: {e}")
-                    self._log_error("watchlist_alpaca_bars", str(e))
+                    print(f"[WATCHLIST] Snapshot batch error: {e}")
+                    self._log_error("watchlist_snapshot", str(e))
 
-            # Step 3: Sort by volume and take top N
+            print(f"[WATCHLIST] Got snapshot data for {len(symbol_data)} symbols")
+
+            # Step 3: If snapshots didn't return enough, try bars for the most popular symbols
+            if len(symbol_data) < 50:
+                print(f"[WATCHLIST] Only got {len(symbol_data)} from snapshots, trying bars for top symbols...")
+                popular_symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
+                                   "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY",
+                                   "BAC", "CSCO", "INTC", "VZ", "T", "XOM", "CVX", "PFE", "MRK",
+                                   "DIS", "NFLX", "AMD", "BA", "CAT", "GE", "F", "GM", "NKE", "COST",
+                                   "NEE", "DUK", "SO", "D", "O", "OHI", "STAG", "VICI", "AMT", "PLD"]
+                
+                missing_popular = [s for s in popular_symbols if s not in symbol_data and s in tradable]
+                if missing_popular:
+                    try:
+                        from alpaca_trade_api.rest import TimeFrame
+                        end_dt = datetime.utcnow()
+                        start_dt = end_dt - timedelta(days=5)
+                        
+                        chunk = missing_popular[:50]
+                        bars_df = self.api.get_bars(
+                            symbol_or_symbols=chunk,
+                            timeframe=TimeFrame.Day,
+                            start=start_dt.strftime("%Y-%m-%d"),
+                            end=end_dt.strftime("%Y-%m-%d"),
+                            adjustment='raw'
+                        )
+                        
+                        if bars_df is not None and not bars_df.empty:
+                            if isinstance(bars_df.index, pd.MultiIndex):
+                                for sym in chunk:
+                                    try:
+                                        if sym in bars_df.index.get_level_values(0):
+                                            sym_df = bars_df.loc[sym]
+                                            if not sym_df.empty and len(sym_df) >= 2:
+                                                price = float(sym_df['close'].iloc[-1])
+                                                volume = float(sym_df['volume'].mean())
+                                                if min_price <= price <= max_price and volume > 0:
+                                                    if sym not in symbol_data:
+                                                        symbol_data[sym] = {"price": price, "volume": volume}
+                                    except Exception:
+                                        continue
+                            else:
+                                if len(chunk) == 1 and not bars_df.empty and len(bars_df) >= 2:
+                                    price = float(bars_df['close'].iloc[-1])
+                                    volume = float(bars_df['volume'].mean())
+                                    if min_price <= price <= max_price and volume > 0:
+                                        if chunk[0] not in symbol_data:
+                                            symbol_data[chunk[0]] = {"price": price, "volume": volume}
+                        
+                        print(f"[WATCHLIST] After bars fallback: {len(symbol_data)} stocks total")
+                    except Exception as e:
+                        print(f"[WATCHLIST] Bars fallback failed: {e}")
+
             if not symbol_data:
-                print("[WATCHLIST] No price data obtained, using default watchlist")
-                self._log_error("watchlist_fallback", "No price data obtained from Alpaca")
-                new_watchlist = self.settings.get("watchlist", DEFAULT_SETTINGS["watchlist"])
-                self.settings["watchlist"] = new_watchlist
-                self.settings["watchlist_auto"] = True
-                self.save_settings()
-                return new_watchlist
+                print("[WATCHLIST] No price data obtained from any source, using current watchlist")
+                self.status_message = f"Watchlist build failed — keeping current {len(self.settings.get('watchlist', []))} stocks"
+                self._log_error("watchlist_build", "No price data from snapshots or bars")
+                return self.settings.get("watchlist", [])
 
+            # Step 4: Sort by volume and build bucket-aware list
             sorted_symbols = sorted(
                 symbol_data.keys(),
                 key=lambda s: symbol_data[s].get("volume", 0),
                 reverse=True
             )
-            new_watchlist = sorted_symbols[:top_n]
 
-            # Always include key stocks
-            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "JNJ", "KO", "PEP", "V"]
-            for sym in must_have:
-                if sym not in new_watchlist:
-                    new_watchlist.insert(0, sym)
+            # Get bucket allocations for proportional selection
+            div_pct = self.settings.get("dividend_pct", 0.35)
+            gro_pct = self.settings.get("growth_pct", 0.35)
+            pen_pct = self.settings.get("penny_pct", 0.30)
+            penny_threshold = self.settings.get("penny_settings", {}).get("penny_price_threshold", 5.0)
 
-            # Remove duplicates while preserving order
+            # Categorize by price for bucket-aware selection
+            penny_stocks = []
+            growth_stocks = []
+            dividend_stocks = []
+            other_stocks = []
+
+            for sym in sorted_symbols:
+                price = symbol_data[sym].get("price", 0)
+                if price <= 0:
+                    other_stocks.append(sym)
+                elif price < penny_threshold:
+                    penny_stocks.append(sym)
+                elif sym in DIVIDEND_STOCKS:
+                    dividend_stocks.append(sym)
+                elif price >= 5:
+                    growth_stocks.append(sym)
+                else:
+                    other_stocks.append(sym)
+
+            # Build result proportional to bucket allocation
+            result = []
             seen = set()
-            unique_watchlist = []
-            for sym in new_watchlist:
-                if sym not in seen:
+
+            # Always include key stocks first
+            must_have = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM",
+                         "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY"]
+            for sym in must_have:
+                if sym not in seen and sym in symbol_data:
+                    result.append(sym)
                     seen.add(sym)
-                    unique_watchlist.append(sym)
-            new_watchlist = unique_watchlist[:top_n + len(must_have)]
 
-            print(f"[WATCHLIST] Final watchlist: {len(new_watchlist)} stocks (target was {top_n})")
+            # Allocate slots proportional to bucket percentages
+            penny_slots = max(20, int(top_n * pen_pct))
+            growth_slots = max(40, int(top_n * gro_pct))
+            dividend_slots = max(20, int(top_n * div_pct))
 
-            if new_watchlist:
-                self.settings["watchlist"] = new_watchlist
+            # Fill penny stocks
+            for sym in penny_stocks:
+                if sym not in seen and len([s for s in result if s not in must_have and symbol_data.get(s, {}).get("price", 999) < penny_threshold]) < penny_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill dividend stocks
+            for sym in dividend_stocks:
+                if sym not in seen and len([s for s in result if s in DIVIDEND_STOCKS]) < dividend_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill growth stocks
+            for sym in growth_stocks:
+                if sym not in seen and len([s for s in result if s not in DIVIDEND_STOCKS and symbol_data.get(s, {}).get("price", 0) >= penny_threshold]) < growth_slots:
+                    result.append(sym)
+                    seen.add(sym)
+
+            # Fill remaining with other stocks by volume
+            for sym in other_stocks + [s for s in sorted_symbols if s not in seen]:
+                if sym not in seen:
+                    result.append(sym)
+                    seen.add(sym)
+                if len(result) >= top_n + len(must_have):
+                    break
+
+            print(f"[WATCHLIST] Final watchlist: {len(result)} stocks (target was {top_n})")
+            print(f"[WATCHLIST] Breakdown: {len([s for s in result if s in DIVIDEND_STOCKS])} dividend, {len([s for s in result if s not in DIVIDEND_STOCKS and symbol_data.get(s, {}).get('price', 999) >= penny_threshold])} growth, {len([s for s in result if symbol_data.get(s, {}).get('price', 999) < penny_threshold])} penny")
+
+            if result:
+                self.settings["watchlist"] = result
                 self.settings["watchlist_auto"] = True
                 self.settings["watchlist_auto_count"] = top_n
                 self.settings["watchlist_last_built"] = datetime.utcnow().isoformat()
                 self.save_settings()
                 self._log_error("watchlist_built", 
-                    f"Built watchlist with {len(new_watchlist)} stocks from {len(symbol_data)} candidates")
+                    f"Built watchlist with {len(result)} stocks from {len(symbol_data)} candidates")
 
-            self.status_message = f"Auto watchlist: {len(new_watchlist)} stocks"
-            return new_watchlist
+            self.status_message = f"Auto watchlist: {len(result)} stocks"
+            return result
 
         except Exception as e:
             print(f"[WATCHLIST] FATAL ERROR: {e}")
