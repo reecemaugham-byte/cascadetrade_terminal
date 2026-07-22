@@ -6,6 +6,8 @@ import bcrypt
 import os
 import json
 
+from sqlalchemy.sql.functions import user
+
 # --- Database Setup ---
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -73,6 +75,9 @@ class User(Base):
     trading_mode = Column(String, default="paper")  # "paper" or "live"
     bot_running = Column(Boolean, default=False)  # 24/7 Worker control
     bot_status = Column(String, default="Stopped")  # Worker status message
+
+    # --- Full Settings JSON ---
+    settings_json = Column(Text, nullable=True)  # Complete settings dict stored as JSON
 
     # --- Subscription & Payments (Stripe) ---
     subscription_plan = Column(String, default="starter")      # starter, pro, fund, admin
@@ -160,7 +165,10 @@ def migrate_db():
             ('subscription_start', 'DATETIME'),
             ('subscription_end', 'DATETIME'),
             ('finnhub_api_key', 'VARCHAR'),
-            ('trading_mode', "VARCHAR DEFAULT 'paper'"),  # NEW: Paper/Live mode
+            ('trading_mode', "VARCHAR DEFAULT 'paper'"),
+            ('bot_running', "BOOLEAN DEFAULT FALSE"),
+            ('bot_status', "VARCHAR DEFAULT 'Stopped'"),
+            ('settings_json', 'TEXT'),
         ]
         for col_name, col_type in new_columns:
             try:
@@ -224,9 +232,11 @@ def create_user(db: SessionLocal, username: str, password: str, terms_accepted: 
         profit_skim_pct=1.0,
         terms_accepted=terms_accepted,
         terms_accepted_date=datetime.datetime.utcnow() if terms_accepted else None,
-        tier="free",  # UPDATED from "starter"
-        trading_mode="paper",  # NEW
-        subscription_plan="free",  # UPDATED from "starter"
+        tier="free",
+        trading_mode="paper",
+        bot_running=False,
+        bot_status="Stopped",
+        subscription_plan="free",
         subscription_status="inactive",
         is_active=True,
         created_at=datetime.datetime.utcnow(),
@@ -286,30 +296,29 @@ def get_user_tier(db: SessionLocal, username: str) -> str:
         # If subscription_end has passed, downgrade
         if user.subscription_end and user.subscription_end < datetime.datetime.utcnow():
             # Subscription period ended — downgrade
-            user.tier = "starter"
+            user.tier = "free"
             user.tier_expires = None
             user.subscription_status = "inactive"
             db.commit()
-            return "starter"
+            return "free"
         # Subscription is active and current
-        return user.subscription_plan or "starter"
+        return user.subscription_plan or "free"
 
     # --- Fall back to legacy tier column ---
     if hasattr(user, 'tier') and user.tier:
         if user.tier_expires and user.tier_expires < datetime.datetime.utcnow():
-            # Tier has expired — downgrade to starter
-            user.tier = "starter"
+            # Tier has expired — downgrade to free
+            user.tier = "free"
             user.tier_expires = None
             db.commit()
-            return "starter"
+            return "free"
         return user.tier
 
-    return "starter"
-
+    return "free"
 
 def set_user_tier(db: SessionLocal, username: str, tier: str, expires: datetime.datetime = None) -> bool:
     """Set a user's tier (legacy method — for admin overrides or manual upgrades)."""
-    valid_tiers = ["starter", "pro", "fund", "admin"]
+    valid_tiers = ["free", "starter", "live_trading", "pro", "pro_trader", "fund", "admin"]
     if tier not in valid_tiers:
         return False
 
@@ -369,9 +378,10 @@ def deactivate_subscription(db: SessionLocal, username: str) -> bool:
         return False
 
     user.subscription_status = "inactive"
-    user.subscription_plan = "starter"
-    user.tier = "starter"
+    user.subscription_plan = "free"
+    user.tier = "free"
     user.tier_expires = None
+
     db.commit()
     return True
 
@@ -406,7 +416,7 @@ def get_all_users_with_tiers(db: SessionLocal) -> list:
         result.append({
             "id": u.id,
             "username": u.username,
-            "tier": getattr(u, 'tier', 'starter') or 'starter',
+            "tier": getattr(u, 'tier', 'free') or 'free',
             "tier_expires": str(u.tier_expires) if hasattr(u, 'tier_expires') and u.tier_expires else None,
             "email": u.email,
             "created_at": str(u.created_at) if u.created_at else None,
@@ -416,12 +426,11 @@ def get_all_users_with_tiers(db: SessionLocal) -> list:
             "alpaca_connected": bool(u.alpaca_api_key),
             "discord_connected": bool(u.discord_webhook_url),
             "openai_connected": bool(u.openai_api_key),
-            "subscription_plan": getattr(u, 'subscription_plan', 'starter') or 'starter',
+            "subscription_plan": getattr(u, 'subscription_plan', 'free') or 'free',
             "subscription_status": getattr(u, 'subscription_status', 'inactive') or 'inactive',
             "subscription_end": str(u.subscription_end) if hasattr(u, 'subscription_end') and u.subscription_end else None,
         })
     return result
-
 
 # ==========================================
 # TERMS & COMPLIANCE FUNCTIONS
@@ -473,7 +482,7 @@ def export_user_data(db: SessionLocal, username: str) -> dict:
             "last_login": str(user.last_login) if user.last_login else None,
             "terms_accepted": user.terms_accepted,
             "terms_accepted_date": str(user.terms_accepted_date) if user.terms_accepted_date else None,
-            "tier": getattr(u, 'tier', 'starter') or 'starter' if hasattr(user, 'tier') else 'starter',
+            "tier": getattr(user, 'tier', 'starter') or 'starter',
             "tier_expires": str(user.tier_expires) if hasattr(user, 'tier_expires') and user.tier_expires else None,
         },
         "settings": {
