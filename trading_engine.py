@@ -1892,6 +1892,9 @@ class TradingEngine:
                     self._log_error("vix_block", vix_result.get("reason", ""))
                     return
 
+            # Always define watchlist (needed as fallback)
+            watchlist = self.settings.get("watchlist", [])
+
             # Reset daily P&L at start of day
             today = datetime.utcnow().strftime("%Y-%m-%d")
             last_cycle_date = self.trade_log[-1].get("timestamp", "")[:10] if self.trade_log else ""
