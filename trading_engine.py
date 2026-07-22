@@ -1095,30 +1095,28 @@ class TradingEngine:
             vix_result = self.check_vix()
             if not vix_result.get("safe_to_trade", True):
                 self.status_message = vix_result.get("reason", "VIX filter active")
+                self._log_error("vix_block", vix_result.get("reason", ""))
                 return
 
-        # Use dynamic universe scan if enabled, otherwise use watchlist
+        # Always define watchlist (needed as fallback)
+        watchlist = self.settings.get("watchlist", [])
+
+        # Decide which stocks to scan
         use_universe = self.settings.get("scan_full_universe", True)
         if use_universe and self.connected and self.api:
-            # Dynamically scan the top stocks from Alpaca
             universe_size = self.settings.get("universe_scan_count", 300)
             scan_slice = self.scan_market_universe(top_n=universe_size)
             if not scan_slice:
-                # Fallback to watchlist if universe scan fails
-                watchlist = self.settings.get("watchlist", [])
                 scan_slice = watchlist
                 self.status_message = f"Universe scan failed, using watchlist ({len(watchlist)} stocks)"
             else:
                 self.status_message = f"Scanning {len(scan_slice)} stocks from universe"
         else:
-            watchlist = self.settings.get("watchlist", [])
             if not watchlist:
                 self.status_message = "No watchlist configured"
                 return
-            
-            # Stagger scanning for large watchlists
             max_per_cycle = 50
-            if len(watchlist) > max_per_cycle:
+            if self.running and len(watchlist) > max_per_cycle:
                 cycle_offset = (self.cycle_count * max_per_cycle) % len(watchlist)
                 scan_slice = watchlist[cycle_offset:cycle_offset + max_per_cycle]
                 self.status_message = f"Scanning {len(scan_slice)}/{len(watchlist)} stocks (cycle {self.cycle_count})"
