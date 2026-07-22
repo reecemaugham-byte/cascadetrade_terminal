@@ -18,7 +18,8 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler()
+        logging.StreamHandler(),
+        logging.FileHandler('worker.log', mode='a')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -41,8 +42,8 @@ def get_or_create_engine(user):
 
 def connect_engine(engine, user):
     """Decrypt the user's Alpaca keys and connect the engine."""
-    api_key = safe_decrypt(user.alpaca_api_key)
-    secret_key = safe_decrypt(user.alpaca_secret_key)
+    api_key = safe_decrypt(user.alpaca_api_key or "")
+    secret_key = safe_decrypt(user.alpaca_secret_key or "")
         
     if not api_key or not secret_key:
         return False, "Missing Alpaca API keys"
@@ -64,6 +65,54 @@ def stop_engine(username):
         finally:
             del active_engines[username]
 
+def load_settings_from_db_for_worker(engine, username):
+    """Load settings from DB and apply to engine, with verification."""
+    try:
+        db = SessionLocal()
+        user = db.query(User).filter(User.username == username).first()
+        if user and hasattr(user, 'settings_json') and user.settings_json:
+            try:
+                import json
+                saved = json.loads(user.settings_json)
+                engine._deep_merge(engine.settings, saved)
+                engine.save_settings()
+                logger.info(f"✅ {username}: Loaded {len(saved)} settings from DB")
+                return True
+            except Exception as e:
+                logger.warning(f"⚠️ {username}: Failed to parse settings_json: {e}")
+        else:
+            logger.warning(f"⚠️ {username}: No settings_json in DB, using file defaults")
+        db.close()
+    except Exception as e:
+        logger.error(f"❌ {username}: Error loading settings from DB: {e}")
+    return False
+
+def save_settings_to_db_for_worker(username, settings_dict):
+    """Save settings to DB with verification."""
+    try:
+        import json
+        db = SessionLocal()
+        user = db.query(User).filter(User.username == username).first()
+        if user:
+            if hasattr(user, 'settings_json'):
+                user.settings_json = json.dumps(settings_dict)
+                db.commit()
+                # Verify the save worked
+                db.refresh(user)
+                if user.settings_json:
+                    logger.info(f"✅ {username}: Settings saved to DB ({len(settings_dict)} keys)")
+                    return True
+                else:
+                    logger.error(f"❌ {username}: settings_json is NULL after save!")
+            else:
+                logger.error(f"❌ {username}: User model doesn't have settings_json column!")
+        else:
+            logger.warning(f"⚠️ {username}: User not found in DB")
+        db.close()
+    except Exception as e:
+        logger.error(f"❌ {username}: Error saving settings to DB: {e}")
+    return False
+
 def run_worker():
     logger.info("=" * 60)
     logger.info("🚀 Roleigh QuanTrader Worker Started")
@@ -82,7 +131,6 @@ def run_worker():
             active_users = db.query(User).filter(User.bot_running == True).all()
             
             if not active_users:
-                # Only print heartbeat every 6th cycle (every ~60 seconds at 10s sleep)
                 if cycle % 6 == 0:
                     logger.info(f"[{datetime.datetime.now()}] 💤 No active bots. Waiting...")
                 time.sleep(10)
@@ -96,38 +144,53 @@ def run_worker():
                 try:
                     engine = get_or_create_engine(user)
                     
-                    logger.info(f"🔍 {username}: engine.connected = {engine.connected}")
-                    
                     # Connect if not connected
                     if not engine.connected:
                         logger.info(f"🔌 {username}: Connecting to Alpaca...")
                         success, msg = connect_engine(engine, user)
                         if not success:
                             logger.error(f"❌ {username}: Connection failed - {msg}")
-                            user.bot_status = f"Error: {msg[:50]}"
+                            user.bot_status = f"Error: {msg[:80]}"
                             db.commit()
                             continue
                         logger.info(f"✅ {username}: {msg}")
                     
-                    # Reload settings from file so UI changes take effect
+                    # Load settings from DB first (most up-to-date)
+                    load_settings_from_db_for_worker(engine, username)
+                    # Then also load from file (in case DB is empty)
                     engine.load_settings()
-                    engine.invalidate_bucket_cache()
+                    
+                    # Invalidate all caches before each cycle for fresh data
+                    engine.invalidate_all_caches()
+                    
+                    # Log key settings for debugging
+                    watchlist = engine.settings.get("watchlist", [])
+                    logger.info(f"📋 {username}: Watchlist has {len(watchlist)} stocks")
+                    logger.info(f"⚙️ {username}: Dividend={engine.settings.get('dividend_pct', 0):.0%} "
+                               f"Growth={engine.settings.get('growth_pct', 0):.0%} "
+                               f"Penny={engine.settings.get('penny_pct', 0):.0%}")
                     
                     # Run one trading cycle
                     logger.info(f"🔄 {username}: Running cycle...")
                     engine.run_cycle()
                     
+                    # Log the result
+                    status = engine.status_message
+                    logger.info(f"📊 {username}: {status}")
+                    
                     # Update status in DB so Streamlit can see it
-                    status_msg = f"Running - Cycle {engine.cycle_count}"
-                    user.bot_status = status_msg
-                    user.last_login = datetime.datetime.utcnow()  # Use as heartbeat timestamp
+                    user.bot_status = status[:200] if status else "Running"
+                    user.last_login = datetime.datetime.utcnow()  # Use as heartbeat
                     db.commit()
-                    logger.info(f"✅ {username}: Cycle {engine.cycle_count} complete")
+                    
+                    # Save settings back to DB in case the engine modified them
+                    save_settings_to_db_for_worker(username, engine.settings)
+                    
                 except Exception as e:
                     logger.error(f"❌ {username}: Cycle error - {str(e)}")
                     traceback.print_exc()
                     try:
-                        user.bot_status = f"Error: {str(e)[:50]}"
+                        user.bot_status = f"Error: {str(e)[:80]}"
                         db.commit()
                     except:
                         pass
@@ -147,18 +210,19 @@ def run_worker():
         finally:
             db.close()
         
-        # Use the shortest scan interval from active users' settings
+        # Calculate sleep time based on active users' settings
         if active_users:
-            min_interval = min(
-                (e.settings.get("scan_interval_min", 8) * 60 for e in 
-                 [active_engines.get(u.username) for u in active_users if u.username in active_engines]
-                 if e is not None),
-                default=300
-            )
-            sleep_time = max(60, min_interval)  # At least 60 seconds
+            intervals = []
+            for user in active_users:
+                username = user.username
+                if username in active_engines:
+                    interval = active_engines[username].settings.get("scan_interval_min", 8) * 60
+                    intervals.append(interval)
+            sleep_time = max(60, min(intervals) if intervals else 300)
         else:
             sleep_time = 10
-        logger.info(f"[{datetime.datetime.now()}] 💤 Cycle #{cycle} complete. Sleeping for {sleep_time}s...")
+        
+        logger.info(f"💤 Cycle #{cycle} complete. Sleeping for {sleep_time}s...")
         time.sleep(sleep_time)
 
 if __name__ == "__main__":
