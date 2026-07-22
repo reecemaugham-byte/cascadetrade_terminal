@@ -1934,9 +1934,12 @@ class TradingEngine:
             blocked_msg = ""
             if signals_blocked:
                 blocked_msg = f" | Blocked: {len(signals_blocked)}"
-                # Log each blocked signal for debugging
+                # Show first reason in status so you can see WHY
+                if signals_blocked:
+                    blocked_msg += f" WHY: {signals_blocked[0]}"
                 for b in signals_blocked[:5]:
                     self._log_error("signal_blocked", b)
+
             
             self.status_message = (
                 f"Cycle {self.cycle_count} complete. "
