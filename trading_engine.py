@@ -3120,8 +3120,7 @@ class TradingEngine:
 
     def auto_build_watchlist(self, top_n: int = 100, min_price: float = 5.0,
                              max_price: float = 500.0) -> List[str]:
-        """Build an automatic watchlist from the Alpaca universe.
-        Uses smaller batches and error handling to avoid timeouts."""
+        """Build an automatic watchlist from the Alpaca universe."""
         try:
             if not self.connected or not self.api:
                 self.status_message = "Not connected — cannot build watchlist"
@@ -3129,9 +3128,13 @@ class TradingEngine:
 
             # Step 1: Get all tradable assets from Alpaca
             self.status_message = "Fetching Alpaca asset list..."
+            print(f"[WATCHLIST] Starting build: target={top_n}, min_price={min_price}, max_price={max_price}")
+            
             try:
                 assets = self.api.list_assets(status="active")
+                print(f"[WATCHLIST] Got {len(assets)} assets from Alpaca")
             except Exception as e:
+                print(f"[WATCHLIST] Error listing assets: {e}")
                 self._log_error("list_assets", str(e))
                 assets = []
 
@@ -3147,18 +3150,21 @@ class TradingEngine:
                 tradable.append(sym)
 
             if not tradable:
+                print("[WATCHLIST] No tradable symbols found, using default watchlist")
                 self._log_error("watchlist_build", "No tradable symbols found")
-                return self.settings.get("watchlist", [])
+                new_watchlist = self.settings.get("watchlist", DEFAULT_SETTINGS["watchlist"])
+                self.settings["watchlist"] = new_watchlist
+                self.settings["watchlist_auto"] = True
+                self.save_settings()
+                return new_watchlist
 
             # Limit the number we try to get price data for
-            # top_n * 3 means for 250 target, we try 750, not 1250
             max_to_fetch = min(len(tradable), top_n * 3)
             symbols_to_fetch = tradable[:max_to_fetch]
 
-            self._log_error("watchlist_build", 
-                f"Found {len(tradable)} tradable symbols, fetching price data for top {len(symbols_to_fetch)}")
+            print(f"[WATCHLIST] Found {len(tradable)} tradable symbols, fetching price data for {len(symbols_to_fetch)}")
 
-            # Step 2: Fetch price/volume data using Alpaca bars in small chunks
+            # Step 2: Fetch price/volume data using Alpaca bars
             symbol_data = {}
 
             if self.connected and self.api:
@@ -3168,9 +3174,10 @@ class TradingEngine:
                     end_dt = datetime.utcnow()
                     start_dt = end_dt - timedelta(days=5)
                     
-                    # Use smaller chunks (20) with progress tracking
                     chunk_size = 20
                     total_chunks = (len(symbols_to_fetch) + chunk_size - 1) // chunk_size
+                    successful_chunks = 0
+                    failed_chunks = 0
                     
                     for chunk_idx in range(total_chunks):
                         start = chunk_idx * chunk_size
@@ -3200,33 +3207,35 @@ class TradingEngine:
                                         except Exception:
                                             continue
                                 else:
-                                    # Single symbol response
                                     if len(chunk) == 1 and not bars_df.empty and len(bars_df) >= 2:
                                         price = float(bars_df['close'].iloc[-1])
                                         volume = float(bars_df['volume'].mean())
                                         if min_price <= price <= max_price and volume > 0:
                                             symbol_data[chunk[0]] = {"price": price, "volume": volume}
 
+                            successful_chunks += 1
+                            
                             # Small delay between chunks to avoid rate limits
                             if chunk_idx < total_chunks - 1:
                                 time.sleep(0.2)
-                                
+
                         except Exception as e:
-                            # Skip failed chunks, continue with what we have
+                            failed_chunks += 1
                             continue
 
-                    self._log_error("watchlist_alpaca", 
-                        f"Got price data for {len(symbol_data)} symbols from Alpaca")
+                    print(f"[WATCHLIST] Alpaca bars: {successful_chunks} successful chunks, {failed_chunks} failed chunks")
+                    print(f"[WATCHLIST] Got price data for {len(symbol_data)} symbols from Alpaca")
 
                 except ImportError:
-                    pass
+                    print("[WATCHLIST] TimeFrame not available from alpaca_trade_api")
                 except Exception as e:
+                    print(f"[WATCHLIST] Alpaca bars error: {e}")
                     self._log_error("watchlist_alpaca_bars", str(e))
 
             # Step 3: Sort by volume and take top N
             if not symbol_data:
-                # Fallback: just use the symbols we know are popular
-                self._log_error("watchlist_fallback", "No Alpaca data, using default watchlist")
+                print("[WATCHLIST] No price data obtained, using default watchlist")
+                self._log_error("watchlist_fallback", "No price data obtained from Alpaca")
                 new_watchlist = self.settings.get("watchlist", DEFAULT_SETTINGS["watchlist"])
                 self.settings["watchlist"] = new_watchlist
                 self.settings["watchlist_auto"] = True
@@ -3255,6 +3264,8 @@ class TradingEngine:
                     unique_watchlist.append(sym)
             new_watchlist = unique_watchlist[:top_n + len(must_have)]
 
+            print(f"[WATCHLIST] Final watchlist: {len(new_watchlist)} stocks (target was {top_n})")
+
             if new_watchlist:
                 self.settings["watchlist"] = new_watchlist
                 self.settings["watchlist_auto"] = True
@@ -3268,6 +3279,7 @@ class TradingEngine:
             return new_watchlist
 
         except Exception as e:
+            print(f"[WATCHLIST] FATAL ERROR: {e}")
             self.status_message = f"Auto watchlist error: {e}"
             self._log_error("auto_watchlist", str(e))
             return self.settings.get("watchlist", [])
