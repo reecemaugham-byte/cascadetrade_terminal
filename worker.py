@@ -153,12 +153,16 @@ def run_worker():
                     status_msg = engine.status_message
                     logger.info(f"{username}: {status_msg}")
                     
-                    # Update database (heartbeat + status)
+                    # Update database using raw SQL (avoids DetachedInstanceError)
                     try:
-                        user.bot_status = status_msg[:200] if status_msg else "Running"
-                        user.last_login = datetime.datetime.now()
+                        from sqlalchemy import text
+                        db.execute(text("UPDATE users SET bot_status=:status, last_login=:now WHERE username=:uname"),
+                                   {"status": status_msg[:200] if status_msg else "Running",
+                                    "now": datetime.datetime.now(),
+                                    "uname": username})
                         db.commit()
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"Heartbeat update failed: {e}")
                         try:
                             db.rollback()
                         except Exception:
