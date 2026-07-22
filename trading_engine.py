@@ -245,6 +245,7 @@ DEFAULT_SETTINGS = {
     "discord_privacy_mode": True,
     "watchlist_auto": True,
     "watchlist_auto_count": 100,
+    "watchlist_last_built": "",
     "penny_price_threshold": 5.0,
     "min_dividend_yield": 0.03,
     "watchlist": [
