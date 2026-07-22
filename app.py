@@ -2884,13 +2884,44 @@ with tab3:
                 min_p = st.number_input("Min Price $", value=5.0, step=1.0)
                 max_p = st.number_input("Max Price $", value=500.0, step=10.0)
 
-            if st.button("🔄 Build Auto Watchlist"):
+            # Auto-build watchlist if it's too small or stale
+            current_wl_size = len(engine.settings.get("watchlist", []))
+            wl_last_built = engine.settings.get("watchlist_last_built", "")
+            needs_build = current_wl_size < 50 or not wl_last_built
+            
+            if needs_build and engine.connected:
+                st.warning(f"📈 Your watchlist has **{current_wl_size}** stocks. Auto-build recommended for better scanning.")
+                if st.button("🚀 Auto-Build Watchlist Now", type="primary", use_container_width=True):
+                    with st.spinner(f"Scanning Alpaca universe for top {top_n} stocks (1-3 minutes)..."):
+                        wl = engine.auto_build_watchlist(top_n=top_n, min_price=min_p, max_price=max_p)
+                        if wl:
+                            st.success(f"✅ Built watchlist: **{len(wl)}** stocks")
+                            engine.settings["watchlist_last_built"] = datetime.utcnow().isoformat()
+                            engine.save_settings()
+                            save_settings_to_db(st.session_state.username, engine.settings)
+                            st.rerun()
+                        else:
+                            st.error("Failed to build watchlist. Make sure you're connected to Alpaca.")
+            elif not engine.connected:
+                st.info("🔌 Connect to Alpaca first to build an auto watchlist.")
+            else:
+                st.success(f"✅ Watchlist: **{current_wl_size}** stocks | Last built: {wl_last_built[:10] if wl_last_built else 'Never'}")
+            
+            # Manual rebuild button always available
+            if st.button("🔄 Rebuild Watchlist", help="Fetch fresh data from Alpaca and rebuild your watchlist"):
                 if not engine.connected:
                     st.error("Connect to Alpaca first.")
                 else:
-                    with st.spinner(f"Scanning Alpaca universe for top {top_n} stocks..."):
+                    with st.spinner(f"Scanning Alpaca universe for top {top_n} stocks (1-3 minutes)..."):
                         wl = engine.auto_build_watchlist(top_n=top_n, min_price=min_p, max_price=max_p)
-                        st.success(f"✅ Built watchlist: {len(wl)} stocks")
+                        if wl:
+                            st.success(f"✅ Built watchlist: **{len(wl)}** stocks")
+                            engine.settings["watchlist_last_built"] = datetime.utcnow().isoformat()
+                            engine.save_settings()
+                            save_settings_to_db(st.session_state.username, engine.settings)
+                            st.rerun()
+                        else:
+                            st.error("Failed to build watchlist.")
         else:
             watchlist_str = ", ".join(engine.settings["watchlist"])
             tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
