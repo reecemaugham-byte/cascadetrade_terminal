@@ -249,12 +249,41 @@ DEFAULT_SETTINGS = {
     "penny_price_threshold": 5.0,
     "min_dividend_yield": 0.03,
     "watchlist": [
-        "AAPL", "MSFT", "AMZN", "GOOGL", "META", "NVDA", "TSLA", "JPM",
-        "JNJ", "V", "PG", "KO", "PEP", "WMT", "HD", "UNH", "ABBV", "LLY",
-        "XOM", "CVX", "BA", "COST", "AVGO", "CRM", "ADBE", "NFLX", "AMD",
-        "INTC", "PYPL", "DIS", "SBUX", "NKE", "MRK", "PFE", "TMO", "ABT",
-        "CSCO", "ORCL", "IBM", "QCOM", "TXN", "PLTR", "COIN", "RIVN", "NIO",
-        "O", "OHI", "STAG", "VICI", "NEE", "DUK", "CAT", "DE", "MMM", "GE",
+        # === MEGA CAP (Tech) ===
+        "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA",
+        "AVGO", "ORCL", "ADBE", "CRM", "INTU", "NOW", "AMD", "QCOM",
+        "TXN", "MU", "LRCX", "AMAT", "KLAC", "MRVL", "PLTR", "COIN",
+        "SNOW", "DDOG", "NET", "ZS", "CRWD", "PANW", "OKTA",
+        # === MEGA CAP (Non-Tech) ===
+        "JPM", "V", "MA", "BAC", "WFC", "GS", "MS", "C", "BLK", "SCHW",
+        "JNJ", "UNH", "PFE", "MRK", "LLY", "ABBV", "TMO", "ABT", "MRNA", "BIIB",
+        "PG", "KO", "PEP", "WMT", "HD", "COST", "NKE", "TGT", "LOW", "SBUX",
+        "XOM", "CVX", "COP", "SLB", "EOG", "OXY", "MPC", "VLO",
+        "DIS", "NFLX", "CMCSA", "TMUS", "EA", "TTWO",
+        # === LARGE CAP ===
+        "BA", "CAT", "DE", "MMM", "GE", "HON", "LMT", "NOC", "RTX", "UNP",
+        "UPS", "FDX", "GM", "F",
+        "NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "AWK",
+        "O", "OHI", "STAG", "VICI", "AMT", "PLD", "DLR", "EQIX",
+        "BRK.B", "SPGI", "MMC", "AON", "ICE", "CME",
+        # === MID CAP GROWTH ===
+        "SHOP", "SQ", "ROKU", "ZM", "UPST", "RIVN", "LCID", "NIO", "MARA", "RIOT",
+        "SOFI", "HOOD", "AFRM", "OPEN", "PATH",
+        "ABNB", "UBER", "LYFT", "PINS", "SNAP", "SPOT", "MSTR",
+        "WDAY", "TEAM", "DOCU", "BILL", "HUBS", "TWLO", "ESTC",
+        "FSLR", "ENPH", "SEDG", "RUN", "BE", "BLNK", "CHPT", "PLUG", "NKLA",
+        # === DIVIDEND ARISTOCRATS ===
+        "IBM", "CSCO", "INTC", "PFE", "MO", "PM", "BMY", "GILD", "VFC",
+        "CL", "KMB", "CLX", "ED", "NEE", "DUK", "SO", "D",
+        "T", "VZ", "SHW", "APD", "ECL", "LIN",
+        "WBA", "KR", "MDLZ", "GIS", "K", "HSY", "CLX", "CHD",
+        # === PENNY / SPECULATIVE (under $10) ===
+        "SNDL", "FNKO", "HEAR", "GPRO", "FUBO", "SHVO", "NOK", "BB", "NOK",
+        "VALE", "TELL", "MRO", "MUR", "CVE", "SU", "CNQ", "PBR",
+        "VALE", "TECK", "FCX", "NUE", "STLD", "CLF", "CF", "MOS",
+        "SIRI", "LYG", "BCS", "DB", "SAN", "BBVA",
+        "RIG", "DOUG", "PTEN", "HLX", "WTI",
+        "AQN", "TELL", "MCEP", "CIG", "VIST",
     ],
     "penny_settings": {
         "stop_loss_pct": 0.03,
@@ -1246,8 +1275,13 @@ class TradingEngine:
             # Check if already in position
             existing_symbols = [p["symbol"] for p in positions]
             if symbol in existing_symbols and signal_data.get("signal") == "BUY":
-                result["reasons"].append(f"Already holding {symbol}")
-                return result
+                # Allow adding up to max_positions / 2 of the same stock
+                same_count = sum(1 for p in positions if p["symbol"] == symbol)
+                max_same = max(2, self.settings.get("max_positions", 10) // 3)
+                if same_count >= max_same:
+                    result["reasons"].append(f"Already holding {max_same} of {symbol}")
+                    return result
+                # else: allow adding to position
 
             # Check confidence
             confidence = signal_data.get("confidence", 0)
