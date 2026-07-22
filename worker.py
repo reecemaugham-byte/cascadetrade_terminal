@@ -136,6 +136,14 @@ def run_worker():
                 time.sleep(10)
                 continue
             
+            # Heartbeat: update last_login for all active users
+            for user in active_users:
+                try:
+                    user.last_login = datetime.datetime.utcnow()
+                    db.commit()
+                except Exception as e:
+                    logger.warning(f"⚠️ Heartbeat update failed for {user.username}: {e}")
+          
             logger.info(f"\n[{datetime.datetime.now()}] 🔄 Cycle #{cycle} — Checking {len(active_users)} active bot(s)...")
             
             # 2. Run a cycle for each active user
@@ -197,8 +205,8 @@ def run_worker():
                     logger.info(f"📊 {username}: {status}")
                     
                     # Update status in DB so Streamlit can see it
-                    user.bot_status = status[:200] if status else "Running"
-                    user.last_login = datetime.datetime.utcnow()  # Use as heartbeat
+                    user.bot_status = status_msg[:200] if status_msg else "Running"
+                    user.last_login = datetime.datetime.utcnow()  # Heartbeat
                     db.commit()
                     
                     # Save settings back to DB in case the engine modified them
@@ -212,6 +220,13 @@ def run_worker():
                         db.commit()
                     except:
                         pass
+            # Update heartbeat for all active users (even if market is closed)
+            for user in active_users:
+                try:
+                    user.last_login = datetime.datetime.utcnow()
+                    db.commit()
+                except Exception:
+                    pass
             
             # 3. Check for users who clicked "Stop Bot"
             stopped_users = db.query(User).filter(User.bot_running == False).all()
