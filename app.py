@@ -2274,10 +2274,11 @@ with tab3:
         conn_icon = "🟢 Connected" if engine.connected else "🔴 Disconnected"
         bot_icon = "🟢 Running" if worker_running else "⚪ Stopped"
         
-        # Check if worker is actually alive (heartbeat within last 5 minutes)
+        # Check if worker is actually alive (heartbeat within last 2 minutes)
         worker_alive = False
         seconds_since_hb = 9999
         last_hb_str = "Never"
+        worker_status_msg = "Unknown"
         try:
             db_hb = SessionLocal()
             hb_user = db_hb.query(User).filter(User.username == st.session_state.username).first()
@@ -2286,23 +2287,41 @@ with tab3:
                 if hasattr(last_hb, 'replace'):
                     last_hb = last_hb.replace(tzinfo=None)
                 seconds_since_hb = (datetime.utcnow() - last_hb).total_seconds()
-                worker_alive = seconds_since_hb < 300  # Alive if heartbeat within 5 minutes
-                last_hb_str = f"{int(seconds_since_hb // 60)}m {int(seconds_since_hb % 60)}s ago"
-            # Get the full bot status message
-            worker_status_msg = getattr(hb_user, 'bot_status', 'Unknown') if hb_user else 'Unknown'
+                worker_alive = seconds_since_hb < 120  # Alive if heartbeat within 2 minutes
+                minutes = int(seconds_since_hb // 60)
+                seconds = int(seconds_since_hb % 60)
+                last_hb_str = f"{minutes}m {seconds}s ago"
+            worker_status_msg = getattr(hb_user, 'bot_status', 'No status') if hb_user else 'No status'
             db_hb.close()
         except Exception:
-            worker_status_msg = "Unknown"
+            worker_status_msg = "Status unavailable"
         
-        worker_heartbeat = "💚 Worker alive" if worker_alive else "⚠️ Worker not detected (last seen: " + last_hb_str + ")"
-        
+        # Detect zombie state: bot_running=True but worker not alive
+        is_zombie = worker_running and not worker_alive
+       
         # Display status with more detail
         if worker_running:
             if worker_alive:
                 st.success(f"🟢 **Bot is LIVE** — Last activity: {last_hb_str}")
             else:
-                st.warning(f"⚠️ Bot is marked as running but no recent heartbeat (last: {last_hb_str})")
-        
+                st.error(f"🔴 **Bot is NOT responding** — Last heartbeat: {last_hb_str}")
+                st.warning("The worker process may have crashed. Click **Force Stop** below to reset, then restart the bot.")
+                
+                # Force stop button for zombie workers
+                if st.button("🔄 Force Stop & Reset", type="primary", use_container_width=True):
+                    db_zombie = SessionLocal()
+                    try:
+                        from sqlalchemy import text
+                        db_zombie.execute(text("UPDATE users SET bot_running=false, bot_status='Force stopped (zombie)' WHERE username=:uname"),
+                                         {"uname": st.session_state.username})
+                        db_zombie.commit()
+                    except Exception:
+                        pass
+                    db_zombie.close()
+                    st.session_state.confirm_start_bot = False
+                    st.success("✅ Bot force stopped. Click 'Start Bot' to restart.")
+                    st.rerun()
+       
         with st.expander("📡 Worker Details", expanded=worker_running):
             st.write(f"**Connection:** {conn_icon}")
             st.write(f"**Bot:** {bot_icon}")
