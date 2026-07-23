@@ -2325,7 +2325,6 @@ with tab3:
         with st.expander("📡 Worker Details", expanded=worker_running):
             st.write(f"**Connection:** {conn_icon}")
             st.write(f"**Bot:** {bot_icon}")
-            st.write(f"**Heartbeat:** {worker_heartbeat}")
             st.write(f"**Last Status:** {worker_status_msg}")
             st.write(f"**Cycles Completed:** {engine.cycle_count}")
             st.write(f"**Daily P&L:** ${engine.daily_pnl:+,.2f}")
