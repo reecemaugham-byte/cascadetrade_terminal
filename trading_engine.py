@@ -4321,6 +4321,9 @@ class TradingEngine:
         self._sector_cache = {}
         self._data_cache = {}
         self._data_cache_time = {}
+        # Clear universe cache so Scan Once gets fresh data
+        self._universe_cache = []
+        self._universe_cache_time = 0
 
     def auto_add_new_to_watchlist(self, new_symbols: List[str]) -> Dict:
         """Automatically add newly discovered symbols to the watchlist."""
