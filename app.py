@@ -2244,33 +2244,55 @@ with tab3:
                             st.rerun()
 
         with col_btn3:
+            if "last_scan_time" not in st.session_state:
+                st.session_state.last_scan_time = 0
+
             if st.button("🔍 Scan Once", use_container_width=True):
-                if not engine.connected:
-                    st.error("Connect to Alpaca first!")
+                if st.session_state.last_scan_time and (time.time() - st.session_state.last_scan_time) < 5:
+                    st.warning("⏳ Please wait 5 seconds between scans.")
                 else:
-                    use_uni = engine.settings.get("scan_full_universe", True)
-                    uni_count = engine.settings.get("universe_scan_count", 300)
-                    cache_size = len(engine._universe_cache) if hasattr(engine, '_universe_cache') else 0
-                    scan_msg = f"Scanning {'universe' if use_uni else 'watchlist'} for signals..."
-                    with st.spinner(scan_msg):
-                        engine.invalidate_all_caches()  # Force fresh data
-                        signals = engine.scan_signals()
-                        buy_count = sum(1 for s in signals if s["signal"] == "BUY")
-                        sell_count = sum(1 for s in signals if s["signal"] == "SELL")
-                        hold_count = len(signals) - buy_count - sell_count
-                        st.info(f"🔍 Scan mode: **{'Universe' if use_uni else 'Watchlist'}** | Cache cleared | Universe cache: {cache_size} → 0")
-                        if buy_count > 0 or sell_count > 0:
-                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
-                        else:
-                            st.info(f"Scanned {len(signals)} stocks — no strong buy/sell signals found.")
-                            st.caption("Try adjusting RSI/confidence thresholds in Settings, or wait for market open.")
-                        buy_count = sum(1 for s in signals if s["signal"] == "BUY")
-                        sell_count = sum(1 for s in signals if s["signal"] == "SELL")
-                        hold_count = len(signals) - buy_count - sell_count
-                        if buy_count > 0 or sell_count > 0:
-                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
-                        else:
-                            st.info(f"Scanned {len(signals)} stocks — no strong buy/sell signals found. Try adjusting your RSI/confidence thresholds in Settings.")
+                    st.session_state.last_scan_time = time.time()
+                    if not engine.connected:
+                        st.error("Connect to Alpaca first!")
+                    else:
+                        use_uni = engine.settings.get("scan_full_universe", True)
+                        uni_count = engine.settings.get("universe_scan_count", 300)
+                        cache_size = len(engine._universe_cache) if hasattr(engine, '_universe_cache') else 0
+                        scan_msg = f"Scanning {'universe' if use_uni else 'watchlist'} for signals..."
+                        with st.spinner(scan_msg):
+                            engine.invalidate_all_caches()  # Force fresh data
+                            
+                            # Show what we're about to scan
+                            if use_uni:
+                                scan_source = f"Universe (up to {uni_count} stocks)"
+                            else:
+                                scan_source = f"Watchlist ({len(engine.settings.get('watchlist', []))} stocks)"
+                            st.info(f"🔍 Scanning: **{scan_source}**...")
+                            
+                            signals = engine.scan_signals()
+                            buy_count = sum(1 for s in signals if s["signal"] == "BUY")
+                            sell_count = sum(1 for s in signals if s["signal"] == "SELL")
+                            hold_count = len(signals) - buy_count - sell_count
+                            
+                            # Show what was actually scanned
+                            actual_source = "Universe" if engine._universe_cache else "Watchlist"
+                            actual_count = len(engine._universe_cache) if engine._universe_cache else len(engine.settings.get('watchlist', []))
+                            st.info(f"🔍 Scanned via **{actual_source}** ({actual_count} stocks) | Signals: 🟢{buy_count} 🔴{sell_count} ⚪{hold_count}")
+                            
+                            if buy_count > 0 or sell_count > 0:
+                                st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
+                            else:
+                                st.info(f"Scanned {actual_count} stocks — no strong buy/sell signals found.")
+                                st.caption("Try adjusting RSI/confidence thresholds in Settings, or wait for market open.")
+                                if use_uni and actual_count < 50:
+                                    st.warning("⚠️ Universe scan returned very few stocks. Try clicking **Build / Rebuild Watchlist** first, then scan again.")
+                            buy_count = sum(1 for s in signals if s["signal"] == "BUY")
+                            sell_count = sum(1 for s in signals if s["signal"] == "SELL")
+                            hold_count = len(signals) - buy_count - sell_count
+                            if buy_count > 0 or sell_count > 0:
+                                st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
+                            else:
+                                st.info(f"Scanned {len(signals)} stocks — no strong buy/sell signals found. Try adjusting your RSI/confidence thresholds in Settings.")
 
         # --- Confirm Start Bot Warning handled in database-driven control above ---
 
@@ -2955,8 +2977,9 @@ with tab3:
         if "Auto" in wl_mode:
             col_auto1, col_auto2 = st.columns(2)
             with col_auto1:
-                tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
-                max_wl = tier_limits.get("max_watchlist", 50)
+                # Allow up to 500 stocks regardless of tier
+                max_wl = 500
+                current_count = len(engine.settings.get("watchlist", []))
                 top_n = st.slider("How many stocks to scan", 20, max_wl, 
                                   min(engine.settings.get("watchlist_auto_count", 100), max_wl),
                                   key="watchlist_count_slider")
@@ -2979,23 +3002,30 @@ with tab3:
                         with st.spinner(f"Scanning Alpaca universe for top {top_n} stocks...\n\nThis takes 1-3 minutes. Please wait."):
                             wl = engine.auto_build_watchlist(top_n=top_n, min_price=min_p, max_price=max_p)
                             new_count = len(wl) if wl else 0
-                            if wl and new_count > 0:
-                                engine.settings["watchlist"] = wl
-                                engine.settings["watchlist_last_built"] = datetime.utcnow().isoformat()
-                                engine.settings["watchlist_auto"] = True
-                                engine.save_settings()
-                                save_settings_to_db(st.session_state.username, engine.settings)
-                                if new_count > old_count:
-                                    st.success(f"✅ Built watchlist: **{new_count}** stocks (was {old_count})")
-                                elif new_count == old_count:
-                                    st.info(f"ℹ️ Watchlist refreshed: **{new_count}** stocks (same size)")
-                                else:
-                                    st.warning(f"⚠️ Watchlist changed from {old_count} to {new_count} stocks.")
-                                st.caption(f"Last built: {engine.settings.get('watchlist_last_built', 'Unknown')[:19]}")
-                                st.rerun()
+                        if wl and new_count > 0:
+                            engine.settings["watchlist"] = wl
+                            engine.settings["watchlist_last_built"] = datetime.utcnow().isoformat()
+                            engine.settings["watchlist_auto"] = True
+                            engine.save_settings()
+                            save_settings_to_db(st.session_state.username, engine.settings)
+                            if new_count > old_count:
+                                st.success(f"✅ Built watchlist: **{new_count}** stocks (was {old_count})")
+                            elif new_count == old_count:
+                                st.info(f"ℹ️ Watchlist refreshed: **{new_count}** stocks (same size)")
                             else:
-                                st.error(f"❌ Failed to build watchlist. The Alpaca API may be busy — try again in 2-3 minutes.")
-                                st.caption(f"Current watchlist: {old_count} stocks (unchanged)")
+                                st.warning(f"⚠️ Watchlist changed from {old_count} to {new_count} stocks.")
+                            st.caption(f"Last built: {engine.settings.get('watchlist_last_built', 'Unknown')[:19]}")
+                            
+                            # Show breakdown
+                            div_count = len([s for s in wl if s in DIVIDEND_STOCKS])
+                            pen_count = len([s for s in wl if s in GROWTH_STOCKS])
+                            gro_count = new_count - div_count - pen_count
+                            st.caption(f"🟢 {div_count} Dividend | 🔵 {gro_count} Growth | 🔴 {pen_count} Penny")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Failed to build watchlist. The Alpaca API may be busy — try again in 2-3 minutes.")
+                            st.caption(f"Current watchlist: {old_count} stocks (unchanged)")
+                            st.info("💡 **Troubleshooting:** Make sure you're connected to Alpaca (click Connect in Auto Trade tab). Check your API keys in Settings.")
 
                 with build_col2:
                     if st.button("🔄 Refresh from Current Settings", use_container_width=True, key="refresh_watchlist_btn"):
@@ -3005,11 +3035,10 @@ with tab3:
                         st.rerun()
         else:
             watchlist_str = ", ".join(engine.settings["watchlist"])
-            tier_limits = get_tier_limits(st.session_state.username) if TIERS_AVAILABLE else TIER_FEATURES.get("starter", {})
-            max_wl = tier_limits.get("max_watchlist", 50)
+            max_wl = 500
             current_count = len([t.strip().upper() for t in watchlist_str.split(",") if t.strip()])
             if current_count > max_wl:
-                st.warning(f"⚠️ Maximum {max_wl} stocks for your plan. You have {current_count}. Remove stocks or upgrade.")
+                st.warning(f"⚠️ Maximum {max_wl} stocks. You have {current_count}. Remove some stocks.")
             new_watchlist = st.text_area(f"Watchlist (comma separated, max {max_wl})", value=watchlist_str, height=68, key="manual_watchlist_input")
             if new_watchlist != watchlist_str:
                 parsed = [t.strip().upper() for t in new_watchlist.split(",") if t.strip()]
