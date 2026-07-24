@@ -1,6 +1,6 @@
 """
 Roleigh QuanTrader — 24/7 Background Worker
-With heartbeat thread and auto-restart
+With independent heartbeat and auto-restart
 """
 
 import time
@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 active_engines = {}
-heartbeat_stop_event = threading.Event()
+HEARTBEAT_RUNNING = True
 
 def get_or_create_engine(user):
     username = user.username
@@ -84,80 +84,64 @@ def save_settings_to_db_for_worker(username, settings_dict):
     except Exception as e:
         logger.warning(f"Could not save settings to DB for {username}: {e}")
 
-def update_heartbeat(username):
-    """Update the heartbeat timestamp for a single user."""
-    try:
-        db = SessionLocal()
-        try:
-            from sqlalchemy import text
-            db.execute(text("UPDATE users SET last_login=:now WHERE username=:uname"),
-                       {"now": datetime.datetime.now(), "uname": username})
-            db.commit()
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-        finally:
-            db.close()
-    except Exception as e:
-        logger.debug(f"Heartbeat update failed for {username}: {e}")
-
 def heartbeat_loop():
-    """Independent heartbeat thread — updates every 30 seconds for all active users."""
+    """Independent heartbeat thread — NEVER dies, runs every 30 seconds."""
+    global HEARTBEAT_RUNNING
     logger.info("💓 Heartbeat thread started (updates every 30s)")
-    while not heartbeat_stop_event.is_set():
+    
+    while HEARTBEAT_RUNNING:
         try:
             db = SessionLocal()
             try:
+                from sqlalchemy import text
                 active_users = db.query(User).filter(User.bot_running == True).all()
+                now = datetime.datetime.now()
                 for user in active_users:
                     username = user.username
                     try:
-                        from sqlalchemy import text
                         db.execute(text("UPDATE users SET last_login=:now WHERE username=:uname"),
-                                   {"now": datetime.datetime.now(), "uname": username})
+                                   {"now": now, "uname": username})
                     except Exception:
                         pass
-                db.commit()
-                
-                # Also check for zombie workers: bot_running=True but no recent heartbeat
-                # (This shouldn't happen with this thread running, but just in case)
-                for user in active_users:
-                    username = user.username
-                    if username not in active_engines:
-                        # Engine not in memory — this is normal if worker just started
+                try:
+                    db.commit()
+                except Exception:
+                    try:
+                        db.rollback()
+                    except Exception:
                         pass
-                        
             except Exception as e:
-                logger.warning(f"Heartbeat DB error: {e}")
+                logger.warning(f"Heartbeat query error: {e}")
                 try:
                     db.rollback()
                 except Exception:
                     pass
             finally:
-                db.close()
+                try:
+                    db.close()
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"Heartbeat loop error: {e}")
         
-        heartbeat_stop_event.wait(timeout=30)
+        time.sleep(30)
 
 def run_worker():
+    global HEARTBEAT_RUNNING
     logger.info("=" * 60)
     logger.info("Roleigh QuanTrader Worker Started")
     logger.info(f"Time: {datetime.datetime.now()}")
     logger.info("=" * 60)
     
-    # Start the heartbeat thread
-    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True, name="heartbeat")
     heartbeat_thread.start()
+    logger.info("💓 Heartbeat thread launched")
     
     cycle = 0
     
     while True:
         cycle += 1
-        
-        # Use a fresh DB session for each cycle
         db = SessionLocal()
         
         try:
@@ -179,13 +163,11 @@ def run_worker():
                 try:
                     engine = get_or_create_engine(user)
                     
-                    # Connect if needed
                     if not engine.connected:
                         logger.info(f"Connecting {username}...")
                         success, msg = connect_engine(engine, user)
                         if not success:
                             logger.error(f"Connection failed for {username}: {msg}")
-                            # Update status to show error
                             try:
                                 db_err = SessionLocal()
                                 from sqlalchemy import text
@@ -198,12 +180,12 @@ def run_worker():
                             continue
                         logger.info(f"✅ Connected {username}")
                     
-                    # Load fresh settings from DB each cycle
+                    # Load settings
                     load_settings_from_db_for_worker(engine, username)
                     engine.load_settings()
                     engine.invalidate_all_caches()
                     
-                    # Run the trading cycle
+                    # Run cycle
                     engine.run_cycle()
                     
                     # Get status AFTER cycle
@@ -215,7 +197,7 @@ def run_worker():
                     logger.info(f"✅ {username}: {status_msg}")
                     logger.info(f"   Signals: 🟢{buy_count} 🔴{sell_count} | P&L: ${engine.daily_pnl:+,.2f} | Mode: {scan_mode}")
                     
-                    # Update database with detailed status
+                    # Update status using a fresh DB session
                     try:
                         db_status = SessionLocal()
                         from sqlalchemy import text
@@ -240,7 +222,7 @@ def run_worker():
                         except Exception:
                             pass
                     
-                    # Save cycle timestamp in settings for UI heartbeat display
+                    # Save cycle timestamp
                     try:
                         engine.settings["_last_cycle_time"] = datetime.datetime.now().isoformat()
                         engine.settings["_last_cycle_cycles"] = engine.cycle_count
@@ -286,7 +268,7 @@ def run_worker():
             except Exception:
                 pass
         
-        # Calculate sleep time based on active users' settings
+        # Calculate sleep time
         if active_users:
             intervals = []
             for user in active_users:
@@ -306,6 +288,8 @@ if __name__ == "__main__":
         run_worker()
     except KeyboardInterrupt:
         logger.info("Worker stopped by user (KeyboardInterrupt)")
+        HEARTBEAT_RUNNING = False
     except Exception as e:
         logger.critical(f"Worker crashed with fatal error: {e}")
         traceback.print_exc()
+        HEARTBEAT_RUNNING = False
