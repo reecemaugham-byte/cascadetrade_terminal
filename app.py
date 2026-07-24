@@ -2250,10 +2250,20 @@ with tab3:
                 else:
                     use_uni = engine.settings.get("scan_full_universe", True)
                     uni_count = engine.settings.get("universe_scan_count", 300)
+                    cache_size = len(engine._universe_cache) if hasattr(engine, '_universe_cache') else 0
                     scan_msg = f"Scanning {'universe' if use_uni else 'watchlist'} for signals..."
                     with st.spinner(scan_msg):
                         engine.invalidate_all_caches()  # Force fresh data
                         signals = engine.scan_signals()
+                        buy_count = sum(1 for s in signals if s["signal"] == "BUY")
+                        sell_count = sum(1 for s in signals if s["signal"] == "SELL")
+                        hold_count = len(signals) - buy_count - sell_count
+                        st.info(f"🔍 Scan mode: **{'Universe' if use_uni else 'Watchlist'}** | Cache cleared | Universe cache: {cache_size} → 0")
+                        if buy_count > 0 or sell_count > 0:
+                            st.success(f"Found {len(signals)} signals: 🟢 {buy_count} buys | 🔴 {sell_count} sells | ⚪ {hold_count} holds")
+                        else:
+                            st.info(f"Scanned {len(signals)} stocks — no strong buy/sell signals found.")
+                            st.caption("Try adjusting RSI/confidence thresholds in Settings, or wait for market open.")
                         buy_count = sum(1 for s in signals if s["signal"] == "BUY")
                         sell_count = sum(1 for s in signals if s["signal"] == "SELL")
                         hold_count = len(signals) - buy_count - sell_count
